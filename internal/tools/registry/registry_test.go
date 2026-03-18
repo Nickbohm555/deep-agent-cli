@@ -44,6 +44,14 @@ func TestDefinitionsExposeAllPhaseOneTools(t *testing.T) {
 			handlerName: CodeSearchHandlerName,
 			properties:  []string{"case_sensitive", "file_type", "path", "pattern"},
 		},
+		IndexRepoHandlerName: {
+			handlerName: IndexRepoHandlerName,
+			properties:  []string{},
+		},
+		InspectIndexHandlerName: {
+			handlerName: InspectIndexHandlerName,
+			properties:  []string{"limit"},
+		},
 	}
 
 	if len(definitions) != len(expected) {
@@ -135,7 +143,7 @@ func assertStrictObjectSchema(t *testing.T, toolName string, schema map[string]a
 		t.Fatalf("tool %q schema property count = %d, want %d", toolName, len(properties), len(expectedProperties))
 	}
 
-	gotProperties := make([]string, 0, len(properties))
+	gotProperties := []string{}
 	for name, rawProperty := range properties {
 		gotProperties = append(gotProperties, name)
 
@@ -152,7 +160,8 @@ func assertStrictObjectSchema(t *testing.T, toolName string, schema map[string]a
 	}
 
 	sort.Strings(gotProperties)
-	wantProperties := append([]string(nil), expectedProperties...)
+	wantProperties := []string{}
+	wantProperties = append(wantProperties, expectedProperties...)
 	sort.Strings(wantProperties)
 	if !reflect.DeepEqual(gotProperties, wantProperties) {
 		t.Fatalf("tool %q schema properties = %v, want %v", toolName, gotProperties, wantProperties)
@@ -184,6 +193,9 @@ func schemaRequiredFields(t *testing.T, toolName string, raw any) []string {
 		sort.Strings(out)
 		return out
 	default:
+		if raw == nil {
+			return []string{}
+		}
 		t.Fatalf("tool %q schema required type = %T, want []string or []any", toolName, raw)
 		return nil
 	}

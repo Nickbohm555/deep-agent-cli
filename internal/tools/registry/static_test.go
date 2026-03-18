@@ -21,15 +21,17 @@ func TestRegistryListsExpectedTools(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	if len(tools) != 4 {
-		t.Fatalf("ListTools returned %d tools, want 4", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("ListTools returned %d tools, want 6", len(tools))
 	}
 
 	expected := map[string]string{
-		"read_file":   ReadFileHandlerName,
-		"list_files":  ListFilesHandlerName,
-		"bash":        BashHandlerName,
-		"code_search": CodeSearchHandlerName,
+		"read_file":     ReadFileHandlerName,
+		"list_files":    ListFilesHandlerName,
+		"bash":          BashHandlerName,
+		"code_search":   CodeSearchHandlerName,
+		"index_repo":    IndexRepoHandlerName,
+		"inspect_index": InspectIndexHandlerName,
 	}
 
 	for _, tool := range tools {

@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	ReadFileHandlerName   = "read_file"
-	ListFilesHandlerName  = "list_files"
-	BashHandlerName       = "bash"
-	CodeSearchHandlerName = "code_search"
+	ReadFileHandlerName     = "read_file"
+	ListFilesHandlerName    = "list_files"
+	BashHandlerName         = "bash"
+	CodeSearchHandlerName   = "code_search"
+	IndexRepoHandlerName    = "index_repo"
+	InspectIndexHandlerName = "inspect_index"
 )
 
 var staticTools = []runtime.ToolDefinition{
@@ -43,6 +45,20 @@ var staticTools = []runtime.ToolDefinition{
 		Schema:      GenerateSchema[handlers.CodeSearchInput](),
 		Handler:     handlers.CodeSearch,
 		HandlerName: CodeSearchHandlerName,
+	},
+	{
+		Name:        "index_repo",
+		Description: "Run a full baseline index rebuild for the current session-bound repository and persist embeddings for discovered chunks.",
+		Schema:      GenerateSchema[handlers.IndexRepoInput](),
+		Handler:     handlers.IndexRepo,
+		HandlerName: IndexRepoHandlerName,
+	},
+	{
+		Name:        "inspect_index",
+		Description: "Inspect persisted index rows for the current session-bound repository, including file path, chunk ordering, and embedding metadata.",
+		Schema:      GenerateSchema[handlers.InspectIndexInput](),
+		Handler:     handlers.InspectIndex,
+		HandlerName: InspectIndexHandlerName,
 	},
 }
 

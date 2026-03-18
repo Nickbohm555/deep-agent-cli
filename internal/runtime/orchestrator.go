@@ -21,6 +21,10 @@ func NewOrchestrator(provider ProviderClient, registry Registry, dispatcher Tool
 }
 
 func (o *Orchestrator) RunTurn(ctx context.Context, input TurnInput) (TurnOutput, error) {
+	if input.SessionID != "" {
+		ctx = WithSessionID(ctx, input.SessionID)
+	}
+
 	if err := ctx.Err(); err != nil {
 		return TurnOutput{
 			SessionID:  input.SessionID,

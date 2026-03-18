@@ -9,6 +9,7 @@ import (
 )
 
 type repoRootContextKey struct{}
+type sessionIDContextKey struct{}
 type toolSafetyModeContextKey struct{}
 
 func WithRepoRoot(ctx context.Context, repoRoot string) (context.Context, error) {
@@ -27,6 +28,23 @@ func RepoRootFromContext(ctx context.Context) (string, error) {
 	}
 
 	return repoRoot, nil
+}
+
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" {
+		return ctx
+	}
+
+	return context.WithValue(ctx, sessionIDContextKey{}, sessionID)
+}
+
+func SessionIDFromContext(ctx context.Context) (string, error) {
+	sessionID, ok := ctx.Value(sessionIDContextKey{}).(string)
+	if !ok || sessionID == "" {
+		return "", fmt.Errorf("tool execution requires a bound session ID")
+	}
+
+	return sessionID, nil
 }
 
 func WithToolSafetyMode(ctx context.Context, mode safety.ToolMode) context.Context {
