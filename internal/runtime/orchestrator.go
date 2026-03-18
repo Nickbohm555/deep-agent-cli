@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/Nickbohm555/deep-agent-cli/internal/retrieval"
 )
 
 type Orchestrator struct {
-	Provider   ProviderClient
-	Registry   Registry
-	Dispatcher ToolDispatcher
+	Provider          ProviderClient
+	Registry          Registry
+	Dispatcher        ToolDispatcher
+	SemanticRetriever retrieval.SemanticRetriever
 }
 
 func NewOrchestrator(provider ProviderClient, registry Registry, dispatcher ToolDispatcher) *Orchestrator {
@@ -138,9 +141,14 @@ func fallbackAssistantMessage(userMessage string) string {
 }
 
 func (o *Orchestrator) completeTurn(ctx context.Context, input TurnInput, conversation []Message, tools []ToolDefinition) (ProviderResponse, error) {
+	providerConversation, err := o.providerConversation(ctx, input, conversation)
+	if err != nil {
+		return ProviderResponse{}, err
+	}
+
 	response, err := o.Provider.CompleteTurn(ctx, ProviderRequest{
 		Input:        input,
-		Conversation: conversation,
+		Conversation: providerConversation,
 		Tools:        tools,
 	})
 	if err != nil {
@@ -162,6 +170,40 @@ func (o *Orchestrator) completeTurn(ctx context.Context, input TurnInput, conver
 	}
 
 	return response, nil
+}
+
+func (o *Orchestrator) providerConversation(ctx context.Context, input TurnInput, conversation []Message) ([]Message, error) {
+	retrievalMessage, ok, err := BuildRetrievalContext(ctx, o.SemanticRetriever, input.UserMessage)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return conversation, nil
+	}
+
+	return injectRetrievalMessage(conversation, retrievalMessage), nil
+}
+
+func injectRetrievalMessage(conversation []Message, retrievalMessage string) []Message {
+	if len(conversation) == 0 {
+		return []Message{{
+			Role:    MessageRoleSystem,
+			Content: retrievalMessage,
+		}}
+	}
+	last := conversation[len(conversation)-1]
+	if last.Role != MessageRoleUser {
+		return append([]Message(nil), conversation...)
+	}
+
+	withRetrieval := make([]Message, 0, len(conversation)+1)
+	withRetrieval = append(withRetrieval, conversation[:len(conversation)-1]...)
+	withRetrieval = append(withRetrieval, Message{
+		Role:    MessageRoleSystem,
+		Content: retrievalMessage,
+	})
+	withRetrieval = append(withRetrieval, last)
+	return withRetrieval
 }
 
 func (o *Orchestrator) listTools(ctx context.Context) ([]ToolDefinition, error) {
