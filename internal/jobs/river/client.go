@@ -2,12 +2,14 @@ package river
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
 
+	indexstatus "github.com/Nickbohm555/deep-agent-cli/internal/indexsync/status"
 	"github.com/Nickbohm555/deep-agent-cli/internal/jobs/contracts"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +32,7 @@ type Config struct {
 
 type Client struct {
 	river *riverqueue.Client[pgx.Tx]
+	query func(context.Context, string, ...any) (pgx.Rows, error)
 }
 
 type EnqueueResult struct {
@@ -73,7 +76,10 @@ func NewClient(pool *pgxpool.Pool, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("create river client: %w", err)
 	}
 
-	return &Client{river: riverClient}, nil
+	return &Client{
+		river: riverClient,
+		query: pool.Query,
+	}, nil
 }
 
 func (c *Client) EnqueueSyncJob(ctx context.Context, payload contracts.SyncJobPayload) (EnqueueResult, error) {
@@ -94,6 +100,84 @@ func (c *Client) EnqueueIndexJob(ctx context.Context, payload contracts.IndexJob
 	}
 
 	return enqueueResultFromInsert(result), nil
+}
+
+const listScopedJobsSQL = `
+	SELECT
+		id,
+		kind,
+		state,
+		attempt,
+		created_at,
+		attempted_at,
+		finalized_at,
+		encoded_args,
+		errors::jsonb
+	FROM river_job
+	WHERE
+		kind = ANY($1) AND
+		encoded_args->'payload'->>'session_id' = $2 AND
+		encoded_args->'payload'->>'repo_root' = $3
+	ORDER BY created_at DESC, id DESC
+`
+
+func (c *Client) ListJobs(ctx context.Context, sessionID, repoRoot string) ([]indexstatus.JobRecord, error) {
+	scopeSessionID := strings.TrimSpace(sessionID)
+	scopeRepoRoot := normalizeRepoRoot(repoRoot)
+	if scopeSessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	if scopeRepoRoot == "" {
+		return nil, fmt.Errorf("repo_root is required")
+	}
+	if c == nil || c.query == nil {
+		return nil, fmt.Errorf("river client query dependencies are not configured")
+	}
+
+	rows, err := c.query(ctx, listScopedJobsSQL, []string{kindSyncJob, kindIndexJob}, scopeSessionID, scopeRepoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("query scoped river jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var records []indexstatus.JobRecord
+	for rows.Next() {
+		var (
+			record      indexstatus.JobRecord
+			kind        string
+			state       rivertype.JobState
+			encodedArgs []byte
+			errorsJSON  []byte
+		)
+		if err := rows.Scan(
+			&record.JobID,
+			&kind,
+			&state,
+			&record.Attempt,
+			&record.EnqueuedAt,
+			&record.StartedAt,
+			&record.FinishedAt,
+			&encodedArgs,
+			&errorsJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan scoped river job: %w", err)
+		}
+
+		record.Kind = mapStatusKind(kind)
+		record.State = mapStatusState(state)
+		record.Error = latestAttemptError(errorsJSON)
+
+		if err := decodeJobPayload(kind, encodedArgs, &record); err != nil {
+			return nil, fmt.Errorf("decode scoped river job %d payload: %w", record.JobID, err)
+		}
+
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate scoped river jobs: %w", err)
+	}
+
+	return records, nil
 }
 
 type syncJobArgs struct {
@@ -175,6 +259,67 @@ func enqueueResultFromInsert(result *rivertype.JobInsertResult) EnqueueResult {
 		Queue:       result.Job.Queue,
 		ScheduledAt: result.Job.ScheduledAt,
 	}
+}
+
+func mapStatusKind(kind string) indexstatus.JobKind {
+	switch kind {
+	case kindIndexJob:
+		return indexstatus.JobKindIndex
+	default:
+		return indexstatus.JobKindSync
+	}
+}
+
+func mapStatusState(state rivertype.JobState) indexstatus.JobState {
+	switch state {
+	case rivertype.JobStateRunning:
+		return indexstatus.JobStateRunning
+	case rivertype.JobStateCompleted:
+		return indexstatus.JobStateSucceeded
+	case rivertype.JobStateRetryable:
+		return indexstatus.JobStateRetryable
+	case rivertype.JobStateCancelled, rivertype.JobStateDiscarded:
+		return indexstatus.JobStateFailed
+	default:
+		return indexstatus.JobStatePending
+	}
+}
+
+func decodeJobPayload(kind string, encodedArgs []byte, record *indexstatus.JobRecord) error {
+	switch kind {
+	case kindSyncJob:
+		var args syncJobArgs
+		if err := json.Unmarshal(encodedArgs, &args); err != nil {
+			return err
+		}
+		return nil
+	case kindIndexJob:
+		var args indexJobArgs
+		if err := json.Unmarshal(encodedArgs, &args); err != nil {
+			return err
+		}
+		if args.Payload.SnapshotID != 0 {
+			record.SnapshotID = &args.Payload.SnapshotID
+		}
+		record.RootHash = strings.TrimSpace(args.Payload.RootHash)
+		record.DeltaSize = len(args.Payload.Delta.Changes)
+		return nil
+	default:
+		return fmt.Errorf("unsupported river job kind %q", kind)
+	}
+}
+
+func latestAttemptError(errorsJSON []byte) string {
+	if len(errorsJSON) == 0 {
+		return ""
+	}
+
+	var attempts []rivertype.AttemptError
+	if err := json.Unmarshal(errorsJSON, &attempts); err != nil || len(attempts) == 0 {
+		return ""
+	}
+
+	return strings.TrimSpace(attempts[len(attempts)-1].Error)
 }
 
 func normalizeRepoRoot(repoRoot string) string {

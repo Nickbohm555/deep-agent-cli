@@ -48,6 +48,10 @@ func TestDefinitionsExposeAllPhaseOneTools(t *testing.T) {
 			handlerName: IndexRepoHandlerName,
 			properties:  []string{},
 		},
+		IndexStatusHandlerName: {
+			handlerName: IndexStatusHandlerName,
+			properties:  []string{},
+		},
 		InspectIndexHandlerName: {
 			handlerName: InspectIndexHandlerName,
 			properties:  []string{"limit"},

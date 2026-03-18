@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexstore"
+	indexstatus "github.com/Nickbohm555/deep-agent-cli/internal/indexsync/status"
 	"github.com/Nickbohm555/deep-agent-cli/internal/jobs/contracts"
 	riverjobs "github.com/Nickbohm555/deep-agent-cli/internal/jobs/river"
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
@@ -106,7 +108,7 @@ func TestIndexRepoEnqueuesBackgroundSyncJob(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Output), &output); err != nil {
 		t.Fatalf("IndexRepo output is not valid JSON: %v", err)
 	}
-	if output.JobID != 41 || output.Duplicate || output.Status != "queued" || output.Message != "Repository sync started in the background." {
+	if output.JobID != 41 || output.Duplicate || output.Status != "queued" || output.Message != "Repository sync started in the background. Use index_status to check progress." {
 		t.Fatalf("IndexRepo output = %+v, want queued background sync status", output)
 	}
 }
@@ -255,8 +257,110 @@ func TestIndexRepoDeduplicatedQueueStatusIsReturned(t *testing.T) {
 	if err := json.Unmarshal([]byte(indexResult.Output), &output); err != nil {
 		t.Fatalf("IndexRepo output is not valid JSON: %v", err)
 	}
-	if output.JobID != 52 || !output.Duplicate || output.Status != "already_queued" || output.Message != "Repository sync is already queued in the background." {
+	if output.JobID != 52 || !output.Duplicate || output.Status != "already_queued" || output.Message != "Repository sync is already queued in the background. Use index_status to check progress." {
 		t.Fatalf("IndexRepo output = %+v, want duplicate queue status", output)
+	}
+}
+
+func TestIndexStatusRequiresBoundSessionScope(t *testing.T) {
+	t.Parallel()
+
+	ctx, err := runtime.WithRepoRoot(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("WithRepoRoot returned error: %v", err)
+	}
+
+	_, err = IndexStatus(ctx, toolCall(t, "index_status", IndexStatusInput{}))
+	if err == nil {
+		t.Fatal("IndexStatus returned nil error without session scope")
+	}
+	if err.Error() != "tool execution requires a bound session ID" {
+		t.Fatalf("IndexStatus error = %q, want missing session scope", err)
+	}
+}
+
+func TestIndexStatusReturnsSummaryAndStructuredStatus(t *testing.T) {
+	restorePool := newIndexStatusPool
+	restoreService := newIndexStatusService
+	restoreClose := closeIndexStatusPool
+	t.Cleanup(func() {
+		newIndexStatusPool = restorePool
+		newIndexStatusService = restoreService
+		closeIndexStatusPool = restoreClose
+	})
+
+	newIndexStatusPool = func(context.Context) (*pgxpool.Pool, error) {
+		return &pgxpool.Pool{}, nil
+	}
+	closeIndexStatusPool = func(*pgxpool.Pool) {}
+
+	syncAt := time.Unix(1700000000, 0).UTC()
+	repoRoot := t.TempDir()
+	newIndexStatusService = func(*pgxpool.Pool) (indexStatusService, error) {
+		return stubIndexStatusService{
+			status: indexstatus.Status{
+				SessionID:            "session-123",
+				RepoRoot:             repoRoot,
+				LastSuccessfulSyncAt: &syncAt,
+				Queue: indexstatus.QueueCounts{
+					RunningSyncJobs: 1,
+				},
+			},
+		}, nil
+	}
+
+	ctx := mustBindSessionScope(t, "session-123", repoRoot)
+	result, err := IndexStatus(ctx, toolCall(t, "index_status", IndexStatusInput{}))
+	if err != nil {
+		t.Fatalf("IndexStatus returned error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("IndexStatus unexpectedly marked result as error")
+	}
+
+	var output struct {
+		Summary string             `json:"summary"`
+		Status  indexstatus.Status `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &output); err != nil {
+		t.Fatalf("IndexStatus output is not valid JSON: %v", err)
+	}
+	if output.Status.SessionID != "session-123" || output.Status.RepoRoot != repoRoot {
+		t.Fatalf("IndexStatus scope = %+v, want session/repo payload", output.Status)
+	}
+	if output.Status.Queue.RunningSyncJobs != 1 {
+		t.Fatalf("IndexStatus queue = %+v, want running sync count", output.Status.Queue)
+	}
+	if output.Summary == "" {
+		t.Fatal("IndexStatus summary is empty")
+	}
+}
+
+func TestIndexStatusSurfacesServiceFailures(t *testing.T) {
+	restorePool := newIndexStatusPool
+	restoreService := newIndexStatusService
+	restoreClose := closeIndexStatusPool
+	t.Cleanup(func() {
+		newIndexStatusPool = restorePool
+		newIndexStatusService = restoreService
+		closeIndexStatusPool = restoreClose
+	})
+
+	newIndexStatusPool = func(context.Context) (*pgxpool.Pool, error) {
+		return &pgxpool.Pool{}, nil
+	}
+	closeIndexStatusPool = func(*pgxpool.Pool) {}
+	newIndexStatusService = func(*pgxpool.Pool) (indexStatusService, error) {
+		return stubIndexStatusService{err: errors.New("status unavailable")}, nil
+	}
+
+	ctx := mustBindSessionScope(t, "session-123", t.TempDir())
+	_, err := IndexStatus(ctx, toolCall(t, "index_status", IndexStatusInput{}))
+	if err == nil {
+		t.Fatal("IndexStatus returned nil error on service failure")
+	}
+	if err.Error() != "load index_status state: status unavailable" {
+		t.Fatalf("IndexStatus error = %q, want wrapped service failure", err)
 	}
 }
 
@@ -297,4 +401,16 @@ type inspectIndexStoreStub struct {
 
 func (s inspectIndexStoreStub) ListRepoIndex(ctx context.Context, sessionID, repoRoot string) ([]indexstore.ChunkRecord, error) {
 	return s.listFn(ctx, sessionID, repoRoot)
+}
+
+type stubIndexStatusService struct {
+	status indexstatus.Status
+	err    error
+}
+
+func (s stubIndexStatusService) GetIndexSyncStatus(context.Context, string, string) (indexstatus.Status, error) {
+	if s.err != nil {
+		return indexstatus.Status{}, s.err
+	}
+	return s.status, nil
 }

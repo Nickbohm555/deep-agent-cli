@@ -14,6 +14,7 @@ const (
 	BashHandlerName         = "bash"
 	CodeSearchHandlerName   = "code_search"
 	IndexRepoHandlerName    = "index_repo"
+	IndexStatusHandlerName  = "index_status"
 	InspectIndexHandlerName = "inspect_index"
 )
 
@@ -52,6 +53,13 @@ var staticTools = []runtime.ToolDefinition{
 		Schema:      GenerateSchema[handlers.IndexRepoInput](),
 		Handler:     handlers.IndexRepo,
 		HandlerName: IndexRepoHandlerName,
+	},
+	{
+		Name:        "index_status",
+		Description: "Inspect background sync and indexing progress for the current session-bound repository, including queue state, latest success timestamps, and recent failures.",
+		Schema:      GenerateSchema[handlers.IndexStatusInput](),
+		Handler:     handlers.IndexStatus,
+		HandlerName: IndexStatusHandlerName,
 	},
 	{
 		Name:        "inspect_index",

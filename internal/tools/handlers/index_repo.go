@@ -107,7 +107,7 @@ func queuedStatus(duplicate bool) string {
 
 func queuedMessage(duplicate bool) string {
 	if duplicate {
-		return "Repository sync is already queued in the background."
+		return "Repository sync is already queued in the background. Use index_status to check progress."
 	}
-	return "Repository sync started in the background."
+	return "Repository sync started in the background. Use index_status to check progress."
 }
