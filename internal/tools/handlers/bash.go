@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
-	"github.com/Nickbohm555/deep-agent-cli/internal/tools/sandbox"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/safety"
 )
 
 type BashInput struct {
@@ -28,24 +27,41 @@ func Bash(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, error
 		return result, err
 	}
 
-	repoRoot, err := runtime.RepoRootFromContext(ctx)
+	safetyCtx, err := toolSafetyContextFromRuntime(ctx)
 	if err != nil {
 		result.IsError = true
 		return result, err
 	}
 
-	resolution, err := sandbox.EnforceRepoScope(repoRoot, sandbox.ScopeTarget{
-		ToolName:   call.Name,
-		Operation:  "execute",
-		WorkingDir: input.WorkingDir,
-	})
-	if err != nil {
+	if strings.TrimSpace(input.Command) == "" {
+		err := fmt.Errorf("command is required")
 		result.IsError = true
 		return result, err
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", input.Command)
-	cmd.Dir = resolution.WorkingDir
+	if _, err := resolveScopedPath(safetyCtx.SessionRepoRoot, defaultScopedPath(input.WorkingDir)); err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	cmd, cancel, decision, err := safety.PrepareScopedCommand(ctx, safetyCtx, safety.ActionBashExecute, input.Command, input.WorkingDir)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+	if cancel != nil {
+		defer cancel()
+	}
+
+	switch decision {
+	case safety.DecisionDryRun:
+		result.Output = fmt.Sprintf("Command not executed in mode %q", safetyCtx.EffectiveMode())
+		return result, nil
+	case safety.DecisionRequireApproval:
+		result.Output = fmt.Sprintf("Command requires approval in mode %q", safetyCtx.EffectiveMode())
+		return result, nil
+	}
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		result.Output = fmt.Sprintf("Command failed with error: %s\nOutput: %s", err.Error(), string(output))
@@ -54,4 +70,12 @@ func Bash(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, error
 
 	result.Output = strings.TrimSpace(string(output))
 	return result, nil
+}
+
+func defaultScopedPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "."
+	}
+
+	return path
 }

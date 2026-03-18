@@ -3,12 +3,14 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
-	"github.com/Nickbohm555/deep-agent-cli/internal/tools/sandbox"
+	"github.com/Nickbohm555/deep-agent-cli/internal/session"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/safety"
 )
 
 type ListFilesInput struct {
@@ -16,8 +18,6 @@ type ListFilesInput struct {
 }
 
 func ListFiles(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, error) {
-	_ = ctx
-
 	result := runtime.ToolResult{
 		CallID: call.ID,
 		Name:   call.Name,
@@ -34,46 +34,76 @@ func ListFiles(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, 
 		dir = input.Path
 	}
 
-	repoRoot, err := runtime.RepoRootFromContext(ctx)
+	safetyCtx, err := toolSafetyContextFromRuntime(ctx)
 	if err != nil {
 		result.IsError = true
 		return result, err
 	}
 
-	resolution, err := sandbox.EnforceRepoScope(repoRoot, sandbox.ScopeTarget{
-		ToolName:  call.Name,
-		Operation: "list",
-		Path:      dir,
-	})
+	if err := ensureActionAllowed(safetyCtx, safety.ActionListFiles); err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	localPath, err := resolveScopedPath(safetyCtx.SessionRepoRoot, dir)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	repoRoot, err := session.CanonicalizeRepoRoot(safetyCtx.SessionRepoRoot)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	resolvedPath, err := session.ResolvePathWithinRepo(repoRoot, localPath)
 	if err != nil {
 		result.IsError = true
 		return result, err
 	}
 
 	files := make([]string, 0)
-	err = filepath.Walk(resolution.ResolvedPath, func(path string, info os.FileInfo, err error) error {
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			result.IsError = true
+			return result, fmt.Errorf("exit status 1")
+		}
+
+		result.IsError = true
+		return result, err
+	}
+	if !info.IsDir() {
+		files = append(files, displayListPath(repoRoot, resolvedPath, localPath))
+		payload, err := json.Marshal(files)
+		if err != nil {
+			result.IsError = true
+			return result, err
+		}
+
+		result.Output = string(payload)
+		return result, nil
+	}
+
+	err = filepath.Walk(resolvedPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		relPath, err := filepath.Rel(resolution.ResolvedPath, path)
+		relPath, err := filepath.Rel(repoRoot, path)
 		if err != nil {
 			return err
 		}
 
-		if info.IsDir() && (info.Name() == ".devenv" || relPath == ".devenv" || strings.HasPrefix(relPath, ".devenv"+string(filepath.Separator))) {
+		if info.IsDir() && shouldSkipToolDir(info.Name(), relPath) {
 			return filepath.SkipDir
 		}
-
-		if relPath == "." {
-			return nil
-		}
 		if info.IsDir() {
-			files = append(files, relPath+"/")
 			return nil
 		}
 
-		files = append(files, relPath)
+		files = append(files, displayListPath(repoRoot, path, localPath))
 		return nil
 	})
 	if err != nil {
@@ -89,4 +119,27 @@ func ListFiles(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, 
 
 	result.Output = string(payload)
 	return result, nil
+}
+
+func shouldSkipToolDir(name, relPath string) bool {
+	return name == ".devenv" ||
+		name == ".git" ||
+		relPath == ".devenv" ||
+		relPath == ".git" ||
+		strings.HasPrefix(relPath, ".devenv"+string(filepath.Separator)) ||
+		strings.HasPrefix(relPath, ".git"+string(filepath.Separator))
+}
+
+func displayListPath(repoRoot, resolvedPath, requestedPath string) string {
+	relPath, err := filepath.Rel(repoRoot, resolvedPath)
+	if err != nil {
+		return requestedPath
+	}
+
+	relPath = filepath.ToSlash(relPath)
+	if requestedPath == "." {
+		return "./" + relPath
+	}
+
+	return relPath
 }

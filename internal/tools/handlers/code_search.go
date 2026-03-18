@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
-	"github.com/Nickbohm555/deep-agent-cli/internal/tools/sandbox"
+	"github.com/Nickbohm555/deep-agent-cli/internal/session"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/safety"
 )
 
 type CodeSearchInput struct {
@@ -37,8 +38,13 @@ func CodeSearch(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult,
 		return result, err
 	}
 
-	repoRoot, err := runtime.RepoRootFromContext(ctx)
+	safetyCtx, err := toolSafetyContextFromRuntime(ctx)
 	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	if err := ensureActionAllowed(safetyCtx, safety.ActionCodeSearch); err != nil {
 		result.IsError = true
 		return result, err
 	}
@@ -48,11 +54,19 @@ func CodeSearch(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult,
 		searchPath = "."
 	}
 
-	resolution, err := sandbox.EnforceRepoScope(repoRoot, sandbox.ScopeTarget{
-		ToolName:  call.Name,
-		Operation: "search",
-		Path:      searchPath,
-	})
+	localPath, err := resolveScopedPath(safetyCtx.SessionRepoRoot, searchPath)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	repoRoot, err := session.CanonicalizeRepoRoot(safetyCtx.SessionRepoRoot)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	resolvedPath, err := session.ResolvePathWithinRepo(repoRoot, localPath)
 	if err != nil {
 		result.IsError = true
 		return result, err
@@ -67,7 +81,7 @@ func CodeSearch(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult,
 	}
 
 	args = append(args, input.Pattern)
-	targetPath, err := filepath.Rel(resolution.RepoRoot, resolution.ResolvedPath)
+	targetPath, err := filepath.Rel(repoRoot, resolvedPath)
 	if err != nil {
 		result.IsError = true
 		return result, fmt.Errorf("search failed: resolve scoped search path: %w", err)
@@ -78,7 +92,7 @@ func CodeSearch(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult,
 	args = append(args, targetPath)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Dir = resolution.RepoRoot
+	cmd.Dir = repoRoot
 	output, err := cmd.Output()
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
