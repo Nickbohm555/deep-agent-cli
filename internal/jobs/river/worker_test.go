@@ -3,6 +3,7 @@ package river
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,7 +77,11 @@ func TestSyncWorkerRetriesAndAvoidsDuplicateLogicalUpdates(t *testing.T) {
 func TestIndexWorkerRetriesAndRepeatedExecutionRemainIdempotent(t *testing.T) {
 	t.Parallel()
 
-	runner := &stubIndexRunner{}
+	runner := &stubIndexRunner{
+		failCalls: map[int]error{
+			1: errors.New("transient delta apply failure"),
+		},
+	}
 	worker := NewIndexWorker(runner.Run, nil)
 
 	job := &riverqueue.Job[indexJobArgs]{
@@ -108,8 +113,51 @@ func TestIndexWorkerRetriesAndRepeatedExecutionRemainIdempotent(t *testing.T) {
 		t.Fatalf("third Work returned error: %v", err)
 	}
 
-	if runner.calls != 3 {
-		t.Fatalf("runner calls = %d, want 3", runner.calls)
+	if runner.calls != 2 {
+		t.Fatalf("runner calls = %d, want 2", runner.calls)
+	}
+	if runner.logicalUpdates != 1 {
+		t.Fatalf("logicalUpdates = %d, want 1", runner.logicalUpdates)
+	}
+}
+
+func TestIndexWorkerCrashAfterApplySkipsReplayOnRetry(t *testing.T) {
+	t.Parallel()
+
+	runner := &stubIndexRunner{}
+	checkpoint := newMemoryIndexApplyCheckpoint()
+	worker := NewIndexWorkerWithCheckpoint(runner.Run, checkpoint, nil)
+	worker.afterApply = func(context.Context, contracts.IndexJobPayload, indexing.DeltaApplyResult) error {
+		return errors.New("worker crashed after checkpoint")
+	}
+
+	job := &riverqueue.Job[indexJobArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1},
+		Args: newIndexJobArgs(contracts.IndexJobPayload{
+			SessionID:  "session-3",
+			RepoRoot:   "/repo/project",
+			SnapshotID: 18,
+			RootHash:   "root-18",
+			Delta: indexsync.SyncDelta{
+				Changes: []indexsync.DeltaRecord{
+					{Path: "docs/guide.md", Action: indexsync.DeltaActionModify},
+				},
+			},
+		}),
+	}
+
+	if err := worker.Work(context.Background(), job); err == nil {
+		t.Fatal("first Work returned nil error, want retryable error")
+	}
+
+	retryWorker := NewIndexWorkerWithCheckpoint(runner.Run, checkpoint, nil)
+	job.JobRow.Attempt = 2
+	if err := retryWorker.Work(context.Background(), job); err != nil {
+		t.Fatalf("second Work returned error: %v", err)
+	}
+
+	if runner.calls != 1 {
+		t.Fatalf("runner calls = %d, want 1", runner.calls)
 	}
 	if runner.logicalUpdates != 1 {
 		t.Fatalf("logicalUpdates = %d, want 1", runner.logicalUpdates)
@@ -183,25 +231,36 @@ func (e *stubIndexEnqueuer) EnqueueIndexJob(_ context.Context, payload contracts
 type stubIndexRunner struct {
 	calls          int
 	logicalUpdates int
-	lastKey        string
+	failCalls      map[int]error
+	seen           map[string]struct{}
 }
 
-func (r *stubIndexRunner) Run(_ context.Context, sessionID, repoRoot string) (indexing.FullRebuildResult, error) {
+func (r *stubIndexRunner) Run(_ context.Context, payload contracts.IndexJobPayload) (indexing.DeltaApplyResult, error) {
 	r.calls++
-	if r.calls == 1 {
-		return indexing.FullRebuildResult{}, errors.New("transient rebuild failure")
+	if err, ok := r.failCalls[r.calls]; ok {
+		return indexing.DeltaApplyResult{}, err
 	}
 
-	key := sessionID + "::" + repoRoot
-	if key != r.lastKey {
-		r.lastKey = key
+	if r.seen == nil {
+		r.seen = make(map[string]struct{})
+	}
+
+	key := fmt.Sprintf(
+		"%s::%s::%d::%s::%v",
+		payload.SessionID,
+		payload.RepoRoot,
+		payload.SnapshotID,
+		payload.RootHash,
+		payload.Delta.ChangedPaths(),
+	)
+	if _, ok := r.seen[key]; !ok {
+		r.seen[key] = struct{}{}
 		r.logicalUpdates++
 	}
 
-	return indexing.FullRebuildResult{
-		FilesIndexed:   1,
-		ChunksEmbedded: 1,
-		Model:          "test-model",
-		Dimensions:     3,
+	return indexing.DeltaApplyResult{
+		UpsertedPaths:  payload.Delta.ChangedPaths(),
+		FilesTouched:   len(payload.Delta.ChangedPaths()),
+		ChunksReplaced: len(payload.Delta.ChangedPaths()),
 	}, nil
 }

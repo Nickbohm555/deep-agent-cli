@@ -147,3 +147,12 @@ func mergeChunkRecords(
 func chunkRecordKey(relPath string, chunkIndex int) string {
 	return fmt.Sprintf("%s:%d", relPath, chunkIndex)
 }
+
+func cloneChunkInputs(records []indexstore.ChunkRecordInput) []indexstore.ChunkRecordInput {
+	cloned := make([]indexstore.ChunkRecordInput, 0, len(records))
+	for _, record := range records {
+		record.Embedding = append([]float32(nil), record.Embedding...)
+		cloned = append(cloned, record)
+	}
+	return cloned
+}

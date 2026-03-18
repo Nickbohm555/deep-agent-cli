@@ -211,6 +211,9 @@ func TestApplyDeltaIdempotent(t *testing.T) {
 	if store.replaceCalls != 2 {
 		t.Fatalf("ReplaceRepoIndex calls = %d, want 2", store.replaceCalls)
 	}
+	if got := len(applier.embedder.(*stubDeltaApplyEmbedder).calls); got != 1 {
+		t.Fatalf("embedder call count across reapply = %d, want 1", got)
+	}
 
 	got := chunkContentsByPath(store.replaced)
 	want := map[string][]string{
@@ -419,15 +422,6 @@ func newDeltaChunkRecord(sessionID, repoRoot, relPath string, chunkIndex int, co
 
 func cloneChunkRecords(records []indexstore.ChunkRecord) []indexstore.ChunkRecord {
 	cloned := make([]indexstore.ChunkRecord, 0, len(records))
-	for _, record := range records {
-		record.Embedding = append([]float32(nil), record.Embedding...)
-		cloned = append(cloned, record)
-	}
-	return cloned
-}
-
-func cloneChunkInputs(records []indexstore.ChunkRecordInput) []indexstore.ChunkRecordInput {
-	cloned := make([]indexstore.ChunkRecordInput, 0, len(records))
 	for _, record := range records {
 		record.Embedding = append([]float32(nil), record.Embedding...)
 		cloned = append(cloned, record)

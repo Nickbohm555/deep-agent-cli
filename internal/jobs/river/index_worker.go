@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexing"
@@ -12,19 +13,96 @@ import (
 	riverqueue "github.com/riverqueue/river"
 )
 
-type indexRunner func(context.Context, string, string) (indexing.FullRebuildResult, error)
+type indexRunner func(context.Context, contracts.IndexJobPayload) (indexing.DeltaApplyResult, error)
+
+type indexApplyCheckpoint interface {
+	IsApplied(context.Context, contracts.IndexJobPayload) (bool, error)
+	MarkApplied(context.Context, contracts.IndexJobPayload) error
+}
+
+type indexCheckpointRecord struct {
+	SnapshotID int64
+	RootHash   string
+}
+
+type memoryIndexApplyCheckpoint struct {
+	mu      sync.Mutex
+	records map[string]indexCheckpointRecord
+}
+
+func newMemoryIndexApplyCheckpoint() *memoryIndexApplyCheckpoint {
+	return &memoryIndexApplyCheckpoint{
+		records: make(map[string]indexCheckpointRecord),
+	}
+}
+
+func (c *memoryIndexApplyCheckpoint) IsApplied(_ context.Context, payload contracts.IndexJobPayload) (bool, error) {
+	if c == nil {
+		return false, fmt.Errorf("index apply checkpoint is nil")
+	}
+
+	key, record, ok := checkpointRecordForPayload(payload)
+	if !ok {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	stored, exists := c.records[key]
+	if !exists {
+		return false, nil
+	}
+
+	return stored == record, nil
+}
+
+func (c *memoryIndexApplyCheckpoint) MarkApplied(_ context.Context, payload contracts.IndexJobPayload) error {
+	if c == nil {
+		return fmt.Errorf("index apply checkpoint is nil")
+	}
+
+	key, record, ok := checkpointRecordForPayload(payload)
+	if !ok {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records[key] = record
+	return nil
+}
+
+func checkpointRecordForPayload(payload contracts.IndexJobPayload) (string, indexCheckpointRecord, bool) {
+	record := indexCheckpointRecord{
+		SnapshotID: payload.SnapshotID,
+		RootHash:   strings.TrimSpace(payload.RootHash),
+	}
+	if record.SnapshotID == 0 && record.RootHash == "" {
+		return "", indexCheckpointRecord{}, false
+	}
+
+	return contracts.JobIdentityKey(payload.Purpose, payload.SessionID, payload.RepoRoot), record, true
+}
 
 type IndexWorker struct {
 	riverqueue.WorkerDefaults[indexJobArgs]
 
-	run    indexRunner
-	logger *slog.Logger
+	run        indexRunner
+	checkpoint indexApplyCheckpoint
+	logger     *slog.Logger
+	afterApply func(context.Context, contracts.IndexJobPayload, indexing.DeltaApplyResult) error
 }
 
 func NewIndexWorker(run indexRunner, logger *slog.Logger) *IndexWorker {
+	return NewIndexWorkerWithCheckpoint(run, newMemoryIndexApplyCheckpoint(), logger)
+}
+
+func NewIndexWorkerWithCheckpoint(run indexRunner, checkpoint indexApplyCheckpoint, logger *slog.Logger) *IndexWorker {
 	return &IndexWorker{
-		run:    run,
-		logger: logger,
+		run:        run,
+		checkpoint: checkpoint,
+		logger:     logger,
 	}
 }
 
@@ -56,6 +134,9 @@ func (w *IndexWorker) runJob(ctx context.Context, job *riverqueue.Job[indexJobAr
 	if w.run == nil {
 		return outcome, errWorkerConfiguration("index worker runner is required")
 	}
+	if w.checkpoint == nil {
+		return outcome, errWorkerConfiguration("index worker checkpoint is required")
+	}
 
 	payload, err := normalizeIndexPayload(job.Args.Payload)
 	if err != nil {
@@ -68,19 +149,36 @@ func (w *IndexWorker) runJob(ctx context.Context, job *riverqueue.Job[indexJobAr
 	outcome.ChangedCount = len(payload.Delta.Changes)
 
 	if len(payload.Delta.Changes) == 0 {
-		outcome.Message = "delta is empty; skipping rebuild"
+		outcome.Message = "delta is empty; skipping apply"
 		return outcome, nil
 	}
 
-	result, err := w.run(ctx, payload.SessionID, payload.RepoRoot)
+	applied, err := w.checkpoint.IsApplied(ctx, payload)
+	if err != nil {
+		return outcome, fmt.Errorf("check applied delta checkpoint: %w", err)
+	}
+	if applied {
+		outcome.Message = "delta already applied"
+		return outcome, nil
+	}
+
+	result, err := w.run(ctx, payload)
 	if err != nil {
 		return outcome, fmt.Errorf("run index apply: %w", err)
 	}
+	if err := w.checkpoint.MarkApplied(ctx, payload); err != nil {
+		return outcome, fmt.Errorf("mark applied delta checkpoint: %w", err)
+	}
+	if w.afterApply != nil {
+		if err := w.afterApply(ctx, payload, result); err != nil {
+			return outcome, fmt.Errorf("finalize index apply: %w", err)
+		}
+	}
 
 	outcome.Message = fmt.Sprintf(
-		"rebuilt index for %d files and %d chunks",
-		result.FilesIndexed,
-		result.ChunksEmbedded,
+		"applied delta for %d files and %d chunks",
+		result.FilesTouched,
+		result.ChunksReplaced,
 	)
 	return outcome, nil
 }
