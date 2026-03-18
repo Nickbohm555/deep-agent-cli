@@ -1,5 +1,5 @@
 Tasks are in **required implementation order** (1...n). Each section = one context window. Complete one section at a time.
-Current section to work on: section 17. (move +1 after each turn)
+Current section to work on: section 18. (move +1 after each turn)
 
 ## Section 1 — 01-runtime-foundation — 01-01-runtime-boundaries-and-registry — Task 1 (Execution)
 - Plan: `.planning/phases/01-runtime-foundation/01-01-runtime-boundaries-and-registry-PLAN.md`
