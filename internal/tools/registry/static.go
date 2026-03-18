@@ -9,13 +9,14 @@ import (
 )
 
 const (
-	ReadFileHandlerName     = "read_file"
-	ListFilesHandlerName    = "list_files"
-	BashHandlerName         = "bash"
-	CodeSearchHandlerName   = "code_search"
-	IndexRepoHandlerName    = "index_repo"
-	IndexStatusHandlerName  = "index_status"
-	InspectIndexHandlerName = "inspect_index"
+	ReadFileHandlerName       = "read_file"
+	ListFilesHandlerName      = "list_files"
+	BashHandlerName           = "bash"
+	CodeSearchHandlerName     = "code_search"
+	IndexRepoHandlerName      = "index_repo"
+	IndexStatusHandlerName    = "index_status"
+	InspectIndexHandlerName   = "inspect_index"
+	SemanticSearchHandlerName = "semantic_search"
 )
 
 var staticTools = []runtime.ToolDefinition{
@@ -67,6 +68,13 @@ var staticTools = []runtime.ToolDefinition{
 		Schema:      GenerateSchema[handlers.InspectIndexInput](),
 		Handler:     handlers.InspectIndex,
 		HandlerName: InspectIndexHandlerName,
+	},
+	{
+		Name:        "semantic_search",
+		Description: "Run semantic retrieval against the current session-bound repository and return ranked chunk evidence with file path, score, and snippet metadata.",
+		Schema:      GenerateSchema[handlers.SemanticSearchInput](),
+		Handler:     handlers.SemanticSearch,
+		HandlerName: SemanticSearchHandlerName,
 	},
 }
 

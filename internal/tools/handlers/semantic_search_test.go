@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/retrieval"
+	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/safety"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -174,6 +176,90 @@ func TestSemanticSearchToolIncludesFilePathAndScore(t *testing.T) {
 	if evidence.ChunkID == "" || evidence.Snippet == "" {
 		t.Fatalf("evidence = %+v, want non-empty chunk_id and snippet", evidence)
 	}
+}
+
+func TestSemanticSearchDispatchUsesRetriever(t *testing.T) {
+	restorePool := newSemanticSearchPool
+	restoreRetriever := newSemanticRetriever
+	restoreClose := closeSemanticSearchPool
+	t.Cleanup(func() {
+		newSemanticSearchPool = restorePool
+		newSemanticRetriever = restoreRetriever
+		closeSemanticSearchPool = restoreClose
+	})
+
+	newSemanticSearchPool = func(context.Context) (*pgxpool.Pool, error) {
+		return &pgxpool.Pool{}, nil
+	}
+	closeSemanticSearchPool = func(*pgxpool.Pool) {}
+
+	var captured retrieval.SemanticQueryRequest
+	newSemanticRetriever = func(*pgxpool.Pool) (retrieval.SemanticRetriever, error) {
+		return retrieval.NewService(func(_ context.Context, req retrieval.SemanticQueryRequest) (retrieval.SemanticQueryResponse, error) {
+			captured = req
+			return retrieval.SemanticQueryResponse{
+				SessionID: req.SessionID,
+				RepoRoot:  req.RepoRoot,
+				Query:     req.Query,
+				TopK:      req.TopK,
+				Index: retrieval.SemanticIndexReadiness{
+					Ready:  true,
+					Status: "ready",
+				},
+			}, nil
+		}), nil
+	}
+
+	repoRoot := t.TempDir()
+	ctx := mustBindSessionScope(t, "session-dispatch", repoRoot)
+	executor := runtime.NewToolExecutor(semanticSearchRegistryStub{}, repoRoot, safety.ModeReadOnly)
+	boundRepoRoot, err := runtime.RepoRootFromContext(ctx)
+	if err != nil {
+		t.Fatalf("RepoRootFromContext returned error: %v", err)
+	}
+
+	result, err := executor.Dispatch(ctx, toolCall(t, "semantic_search", SemanticSearchInput{
+		Query: "dispatch registry lookup",
+		TopK:  3,
+	}))
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("Dispatch unexpectedly marked result as error")
+	}
+	if captured.SessionID != "session-dispatch" {
+		t.Fatalf("captured session_id = %q, want session-dispatch", captured.SessionID)
+	}
+	if captured.RepoRoot != boundRepoRoot {
+		t.Fatalf("captured repo_root = %q, want %q", captured.RepoRoot, boundRepoRoot)
+	}
+	if captured.Query != "dispatch registry lookup" {
+		t.Fatalf("captured query = %q, want dispatch registry lookup", captured.Query)
+	}
+	if captured.TopK != 3 {
+		t.Fatalf("captured top_k = %d, want 3", captured.TopK)
+	}
+}
+
+type semanticSearchRegistryStub struct{}
+
+func (semanticSearchRegistryStub) ListTools(context.Context) ([]runtime.ToolDefinition, error) {
+	return []runtime.ToolDefinition{
+		{
+			Name:        "semantic_search",
+			Handler:     SemanticSearch,
+			HandlerName: "semantic_search",
+		},
+	}, nil
+}
+
+func (semanticSearchRegistryStub) LookupTool(context.Context, string) (runtime.ToolDefinition, bool, error) {
+	return runtime.ToolDefinition{
+		Name:        "semantic_search",
+		Handler:     SemanticSearch,
+		HandlerName: "semantic_search",
+	}, true, nil
 }
 
 func int64Ptr(value int64) *int64 {

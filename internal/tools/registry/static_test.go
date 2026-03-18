@@ -21,18 +21,19 @@ func TestRegistryListsExpectedTools(t *testing.T) {
 		t.Fatalf("ListTools returned error: %v", err)
 	}
 
-	if len(tools) != 7 {
-		t.Fatalf("ListTools returned %d tools, want 7", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("ListTools returned %d tools, want 8", len(tools))
 	}
 
 	expected := map[string]string{
-		"read_file":     ReadFileHandlerName,
-		"list_files":    ListFilesHandlerName,
-		"bash":          BashHandlerName,
-		"code_search":   CodeSearchHandlerName,
-		"index_repo":    IndexRepoHandlerName,
-		"index_status":  IndexStatusHandlerName,
-		"inspect_index": InspectIndexHandlerName,
+		"read_file":       ReadFileHandlerName,
+		"list_files":      ListFilesHandlerName,
+		"bash":            BashHandlerName,
+		"code_search":     CodeSearchHandlerName,
+		"index_repo":      IndexRepoHandlerName,
+		"index_status":    IndexStatusHandlerName,
+		"inspect_index":   InspectIndexHandlerName,
+		"semantic_search": SemanticSearchHandlerName,
 	}
 
 	for _, tool := range tools {
@@ -52,6 +53,35 @@ func TestRegistryListsExpectedTools(t *testing.T) {
 		if len(tool.Schema) == 0 {
 			t.Fatalf("tool %s missing schema", tool.Name)
 		}
+	}
+}
+
+func TestToolRegistryIncludesSemanticSearch(t *testing.T) {
+	registry := New()
+
+	tool, ok, err := registry.LookupTool(context.Background(), "semantic_search")
+	if err != nil {
+		t.Fatalf("LookupTool returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("LookupTool did not find semantic_search")
+	}
+	if tool.HandlerName != SemanticSearchHandlerName {
+		t.Fatalf("LookupTool handler name = %q, want %q", tool.HandlerName, SemanticSearchHandlerName)
+	}
+	if tool.Handler == nil {
+		t.Fatal("LookupTool returned nil handler for semantic_search")
+	}
+
+	properties, ok := tool.Schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("semantic_search schema properties type = %T, want map[string]any", tool.Schema["properties"])
+	}
+	if _, ok := properties["query"]; !ok {
+		t.Fatal("semantic_search schema is missing query property")
+	}
+	if _, ok := properties["top_k"]; !ok {
+		t.Fatal("semantic_search schema is missing top_k property")
 	}
 }
 
