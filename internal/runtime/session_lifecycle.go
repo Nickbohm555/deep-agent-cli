@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/session"
@@ -28,12 +27,12 @@ func CreateOrResumeSession(ctx context.Context, store session.SessionStore, para
 	}
 
 	threadID := strings.TrimSpace(params.ThreadID)
-	repoRoot, err := resolveRepoRoot(params.RepoRoot)
-	if err != nil {
-		return SessionBootstrap{}, err
-	}
-
 	if threadID == "" {
+		repoRoot, err := resolveRepoRoot(params.RepoRoot)
+		if err != nil {
+			return SessionBootstrap{}, err
+		}
+
 		created, err := store.CreateSession(ctx, session.CreateSessionParams{
 			RepoRoot: repoRoot,
 		})
@@ -49,6 +48,9 @@ func CreateOrResumeSession(ctx context.Context, store session.SessionStore, para
 	resumed, err := store.ResumeSession(ctx, threadID)
 	if err != nil {
 		return SessionBootstrap{}, fmt.Errorf("resume session %q: %w", threadID, err)
+	}
+	if err := session.EnsureSessionRepoRootImmutable(resumed, params.RepoRoot); err != nil {
+		return SessionBootstrap{}, err
 	}
 
 	messages, err := store.ListMessages(ctx, threadID)
@@ -93,10 +95,10 @@ func resolveRepoRoot(repoRoot string) (string, error) {
 		trimmed = wd
 	}
 
-	abs, err := filepath.Abs(trimmed)
+	root, err := session.CanonicalizeRepoRoot(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("resolve repo root %q: %w", trimmed, err)
+		return "", fmt.Errorf("resolve repo root: %w", err)
 	}
 
-	return abs, nil
+	return root, nil
 }

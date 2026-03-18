@@ -3,6 +3,9 @@ package runtime
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +61,7 @@ func TestCreateOrResumeSessionLoadsExistingThreadHistory(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	repoRoot := t.TempDir()
 	store := &stubSessionStore{
 		resumeSessionFn: func(_ context.Context, threadID string) (session.Session, error) {
 			if threadID != "thread-123" {
@@ -65,7 +69,7 @@ func TestCreateOrResumeSessionLoadsExistingThreadHistory(t *testing.T) {
 			}
 			return session.Session{
 				ThreadID:  "thread-123",
-				RepoRoot:  "/repo",
+				RepoRoot:  repoRoot,
 				CreatedAt: now,
 			}, nil
 		},
@@ -82,7 +86,7 @@ func TestCreateOrResumeSessionLoadsExistingThreadHistory(t *testing.T) {
 
 	bootstrap, err := CreateOrResumeSession(context.Background(), store, SessionLifecycleParams{
 		ThreadID: " thread-123 ",
-		RepoRoot: "/ignored-on-resume",
+		RepoRoot: repoRoot,
 	})
 	if err != nil {
 		t.Fatalf("CreateOrResumeSession returned error: %v", err)
@@ -176,6 +180,44 @@ func TestCreateOrResumeSessionPropagatesResumeErrors(t *testing.T) {
 	})
 	if !errors.Is(err, session.ErrSessionNotFound) {
 		t.Fatalf("error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestCreateOrResumeSessionRejectsRepoRootRebindingOnResume(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	otherRoot := filepath.Join(tempDir, "other")
+	if err := os.Mkdir(repoRoot, 0o755); err != nil {
+		t.Fatalf("Mkdir returned error: %v", err)
+	}
+	if err := os.Mkdir(otherRoot, 0o755); err != nil {
+		t.Fatalf("Mkdir returned error: %v", err)
+	}
+
+	store := &stubSessionStore{
+		resumeSessionFn: func(_ context.Context, threadID string) (session.Session, error) {
+			return session.Session{
+				ThreadID:  threadID,
+				RepoRoot:  repoRoot,
+				CreatedAt: time.Now(),
+			}, nil
+		},
+	}
+
+	_, err := CreateOrResumeSession(context.Background(), store, SessionLifecycleParams{
+		ThreadID: "thread-123",
+		RepoRoot: otherRoot,
+	})
+	if err == nil {
+		t.Fatal("CreateOrResumeSession returned nil error, want repo rebinding error")
+	}
+	if !strings.Contains(err.Error(), "already bound") {
+		t.Fatalf("error = %v, want repo rebinding error", err)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("ListMessages called %d times, want 0 after repo mismatch", store.listCalls)
 	}
 }
 
