@@ -5,10 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	toolregistry "github.com/Nickbohm555/deep-agent-cli/internal/tools/registry"
 )
 
 func main() {
@@ -28,6 +30,7 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 	systemPrompt := fs.String("system-prompt", "", "optional system prompt")
 	maxTurns := fs.Int("max-turns", 8, "maximum model turns per request")
 	maxToolIterations := fs.Int("max-tool-iterations", 8, "maximum tool iterations per request")
+	showRegistry := fs.Bool("registry", false, "print the registered tools and exit")
 	verbose := fs.Bool("verbose", false, "enable verbose runtime output")
 
 	if err := fs.Parse(args); err != nil {
@@ -35,6 +38,12 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 	}
 
 	_ = godotenv.Load()
+	if *showRegistry {
+		return printRegistry(stdout)
+	}
+	if err := validateStartup(*mode, *prompt, *maxTurns, *maxToolIterations); err != nil {
+		return err
+	}
 
 	cfg := runtime.ExecutionConfig{
 		Mode:              runtime.ExecutionMode(*mode),
@@ -68,4 +77,43 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 	}
 
 	return fmt.Errorf("unsupported mode %q (expected %q or %q)", *mode, runtime.ExecutionModeInteractive, runtime.ExecutionModeOneShot)
+}
+
+func validateStartup(mode, prompt string, maxTurns, maxToolIterations int) error {
+	trimmedMode := strings.TrimSpace(mode)
+	switch runtime.ExecutionMode(trimmedMode) {
+	case runtime.ExecutionModeInteractive, runtime.ExecutionModeOneShot:
+	default:
+		return fmt.Errorf("unsupported mode %q (expected %q or %q)", mode, runtime.ExecutionModeInteractive, runtime.ExecutionModeOneShot)
+	}
+
+	if runtime.ExecutionMode(trimmedMode) == runtime.ExecutionModeOneShot && strings.TrimSpace(prompt) == "" {
+		return fmt.Errorf("prompt is required in oneshot mode; rerun with -prompt \"your request\"")
+	}
+	if maxTurns <= 0 {
+		return fmt.Errorf("max-turns must be greater than 0")
+	}
+	if maxToolIterations <= 0 {
+		return fmt.Errorf("max-tool-iterations must be greater than 0")
+	}
+
+	if os.Getenv("OPENAI_API_KEY") == "" {
+		fmt.Fprintln(os.Stderr, "OPENAI_API_KEY is not set; continuing in local fallback mode. Export OPENAI_API_KEY to enable model-backed responses.")
+	}
+
+	return nil
+}
+
+func printRegistry(stdout *os.File) error {
+	out := stdout
+	if out == nil {
+		out = os.Stdout
+	}
+
+	fmt.Fprintln(out, "Registered tools:")
+	for _, tool := range toolregistry.Definitions() {
+		fmt.Fprintf(out, "- %s: %s\n", tool.Name, tool.Description)
+	}
+
+	return nil
 }
