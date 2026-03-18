@@ -90,7 +90,10 @@ func toolSafetyContextFromRuntime(ctx context.Context) (safety.ToolSafetyContext
 		return safety.ToolSafetyContext{}, err
 	}
 
-	return safety.ToolSafetyContext{SessionRepoRoot: repoRoot}, nil
+	return safety.ToolSafetyContext{
+		SessionRepoRoot: repoRoot,
+		Mode:            runtime.ToolSafetyModeFromContext(ctx),
+	}, nil
 }
 
 func ensureActionAllowed(safetyCtx safety.ToolSafetyContext, action safety.ToolAction) error {

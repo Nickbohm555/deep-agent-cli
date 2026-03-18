@@ -5,9 +5,11 @@ import (
 	"fmt"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/session"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/safety"
 )
 
 type repoRootContextKey struct{}
+type toolSafetyModeContextKey struct{}
 
 func WithRepoRoot(ctx context.Context, repoRoot string) (context.Context, error) {
 	canonicalRoot, err := session.CanonicalizeRepoRoot(repoRoot)
@@ -25,4 +27,17 @@ func RepoRootFromContext(ctx context.Context) (string, error) {
 	}
 
 	return repoRoot, nil
+}
+
+func WithToolSafetyMode(ctx context.Context, mode safety.ToolMode) context.Context {
+	if mode == "" {
+		return ctx
+	}
+
+	return context.WithValue(ctx, toolSafetyModeContextKey{}, mode)
+}
+
+func ToolSafetyModeFromContext(ctx context.Context) safety.ToolMode {
+	mode, _ := ctx.Value(toolSafetyModeContextKey{}).(safety.ToolMode)
+	return mode
 }
