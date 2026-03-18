@@ -7,9 +7,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Nickbohm555/deep-agent-cli/internal/platform/db"
 	"github.com/joho/godotenv"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	sessionpostgres "github.com/Nickbohm555/deep-agent-cli/internal/session/postgres"
 	toolregistry "github.com/Nickbohm555/deep-agent-cli/internal/tools/registry"
 )
 
@@ -28,6 +30,8 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 	prompt := fs.String("prompt", "", "prompt to run in oneshot mode")
 	model := fs.String("model", "", "model name to forward to the runtime")
 	systemPrompt := fs.String("system-prompt", "", "optional system prompt")
+	sessionID := fs.String("session", "", "existing thread ID to resume; omit to create a new thread")
+	repoRoot := fs.String("repo-root", "", "repository root to bind to a new session (defaults to current working directory)")
 	maxTurns := fs.Int("max-turns", 8, "maximum model turns per request")
 	maxToolIterations := fs.Int("max-tool-iterations", 8, "maximum tool iterations per request")
 	showRegistry := fs.Bool("registry", false, "print the registered tools and exit")
@@ -54,23 +58,44 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 		Verbose:           *verbose,
 	}
 
+	pool, err := db.NewPoolFromEnv(ctx)
+	if err != nil {
+		return fmt.Errorf("initialize session database: %w", err)
+	}
+	defer pool.Close()
+
+	bootstrap, err := runtime.CreateOrResumeSession(ctx, sessionpostgres.New(pool), runtime.SessionLifecycleParams{
+		ThreadID: *sessionID,
+		RepoRoot: *repoRoot,
+	})
+	if err != nil {
+		return err
+	}
+
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	fmt.Fprintf(stdout, "Session: %s\n", bootstrap.Session.ThreadID)
+
 	orchestrator := runtime.NewOrchestrator(nil, nil, nil)
 
 	if *mode == string(runtime.ExecutionModeInteractive) {
 		driver := runtime.InteractiveDriver{
-			Runner: orchestrator,
-			Config: cfg,
-			In:     stdin,
-			Out:    stdout,
+			Runner:    orchestrator,
+			Config:    cfg,
+			In:        stdin,
+			Out:       stdout,
+			SessionID: bootstrap.Session.ThreadID,
 		}
 		return driver.Run(ctx)
 	}
 
 	if *mode == string(runtime.ExecutionModeOneShot) {
 		driver := runtime.OneShotDriver{
-			Runner: orchestrator,
-			Config: cfg,
-			Out:    stdout,
+			Runner:    orchestrator,
+			Config:    cfg,
+			Out:       stdout,
+			SessionID: bootstrap.Session.ThreadID,
 		}
 		_, err := driver.Run(ctx, *prompt)
 		return err
