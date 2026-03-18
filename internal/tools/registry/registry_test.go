@@ -56,6 +56,10 @@ func TestDefinitionsExposeAllPhaseOneTools(t *testing.T) {
 			handlerName: InspectIndexHandlerName,
 			properties:  []string{"limit"},
 		},
+		SemanticSearchHandlerName: {
+			handlerName: SemanticSearchHandlerName,
+			properties:  []string{"query", "top_k"},
+		},
 	}
 
 	if len(definitions) != len(expected) {
