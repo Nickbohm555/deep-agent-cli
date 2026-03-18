@@ -1,0 +1,4 @@
+{
+  "success": "alpha-123-beta",
+  "failure": "Command failed with error: exit status 7\nOutput: fail-line\n"
+}

@@ -1,0 +1,5 @@
+{
+  "success": "./src/example.go:12:\treturn \"alpha-123-beta\"",
+  "no_matches": "No matches found",
+  "missing_pattern_error": "pattern is required"
+}

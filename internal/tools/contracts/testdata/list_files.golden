@@ -1,0 +1,4 @@
+{
+  "success": "[\"./README.md\",\"./src/example.go\"]",
+  "missing_path_error": "exit status 1"
+}

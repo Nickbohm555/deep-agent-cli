@@ -1,0 +1,4 @@
+{
+  "success": "fixture-repo\n============\n\nThis fixture repository is used by tool contract tests.\n\nSearch anchors:\n- README_SEARCH_TOKEN\n- owner: fixture-team\n- module path: fixture_repo/src/example.go\n",
+  "missing_file_error": "open missing.txt: no such file or directory"
+}
