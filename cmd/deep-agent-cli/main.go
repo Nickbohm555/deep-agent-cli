@@ -64,7 +64,9 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 	}
 	defer pool.Close()
 
-	bootstrap, err := runtime.CreateOrResumeSession(ctx, sessionpostgres.New(pool), runtime.SessionLifecycleParams{
+	store := sessionpostgres.New(pool)
+
+	bootstrap, err := runtime.CreateOrResumeSession(ctx, store, runtime.SessionLifecycleParams{
 		ThreadID: *sessionID,
 		RepoRoot: *repoRoot,
 	})
@@ -77,11 +79,14 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 	}
 	fmt.Fprintf(stdout, "Session: %s\n", bootstrap.Session.ThreadID)
 
-	orchestrator := runtime.NewOrchestrator(nil, nil, nil)
+	runner := runtime.NewPersistentTurnRunner(
+		store,
+		runtime.NewOrchestrator(nil, nil, nil),
+	)
 
 	if *mode == string(runtime.ExecutionModeInteractive) {
 		driver := runtime.InteractiveDriver{
-			Runner:    orchestrator,
+			Runner:    runner,
 			Config:    cfg,
 			In:        stdin,
 			Out:       stdout,
@@ -93,7 +98,7 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 
 	if *mode == string(runtime.ExecutionModeOneShot) {
 		driver := runtime.OneShotDriver{
-			Runner:    orchestrator,
+			Runner:    runner,
 			Config:    cfg,
 			Out:       stdout,
 			SessionID: bootstrap.Session.ThreadID,
