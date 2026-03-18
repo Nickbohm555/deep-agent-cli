@@ -25,6 +25,11 @@ type SyncDeltaSet struct {
 	Changes          []FileDelta
 }
 
+type ChangedFiles struct {
+	FilesToUpsert []string
+	FilesToRemove []string
+}
+
 func (d *SyncDeltaSet) add(change FileDelta) {
 	d.Changes = append(d.Changes, change)
 }
@@ -56,4 +61,9 @@ func compareDeltaOp(a, b DeltaOp) int {
 	}
 
 	return order(a) - order(b)
+}
+
+func (c *ChangedFiles) sort() {
+	slices.Sort(c.FilesToUpsert)
+	slices.Sort(c.FilesToRemove)
 }

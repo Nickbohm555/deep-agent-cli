@@ -118,6 +118,67 @@ func TestDiffSnapshots(t *testing.T) {
 	}
 }
 
+func TestMaterializeChangedFiles_NoChangeProducesEmptyMaterialization(t *testing.T) {
+	t.Parallel()
+
+	beforeRoot := createRepoFixture(t)
+	afterRoot := createRepoFixture(t)
+
+	beforeSnapshot, err := snapshot.BuildSnapshot(beforeRoot)
+	if err != nil {
+		t.Fatalf("BuildSnapshot(before) returned error: %v", err)
+	}
+	afterSnapshot, err := snapshot.BuildSnapshot(afterRoot)
+	if err != nil {
+		t.Fatalf("BuildSnapshot(after) returned error: %v", err)
+	}
+
+	delta, err := DiffSnapshots(beforeSnapshot, afterSnapshot)
+	if err != nil {
+		t.Fatalf("DiffSnapshots returned error: %v", err)
+	}
+
+	got := MaterializeChangedFiles(delta)
+	if len(got.FilesToUpsert) != 0 || len(got.FilesToRemove) != 0 {
+		t.Fatalf("MaterializeChangedFiles() = %#v, want empty result", got)
+	}
+}
+
+func TestMaterializeChangedFiles_IsStableAndDeduped(t *testing.T) {
+	t.Parallel()
+
+	delta := SyncDeltaSet{
+		Changes: []FileDelta{
+			{Op: DeltaOpModify, Path: "src/main.go"},
+			{Op: DeltaOpDelete, Path: "docs/old.md"},
+			{Op: DeltaOpAdd, Path: "docs/new.md"},
+			{Op: DeltaOpModify, Path: "src/main.go"},
+			{Op: DeltaOpDelete, Path: "docs/old.md"},
+			{Op: DeltaOpAdd, Path: "docs/new.md"},
+			{Op: DeltaOpModify, Path: " README.md "},
+			{Op: DeltaOpDelete, Path: ""},
+		},
+	}
+
+	want := ChangedFiles{
+		FilesToUpsert: []string{"README.md", "docs/new.md", "src/main.go"},
+		FilesToRemove: []string{"docs/old.md"},
+	}
+
+	first := MaterializeChangedFiles(delta)
+	second := MaterializeChangedFiles(delta)
+
+	if !reflect.DeepEqual(first, want) {
+		t.Fatalf("first materialization = %#v, want %#v", first, want)
+	}
+	if !reflect.DeepEqual(second, want) {
+		t.Fatalf("second materialization = %#v, want %#v", second, want)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("materialization not stable: first=%#v second=%#v", first, second)
+	}
+}
+
 func createRepoFixture(t *testing.T) string {
 	t.Helper()
 
