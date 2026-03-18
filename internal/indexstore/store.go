@@ -49,14 +49,16 @@ const (
 )
 
 type Store struct {
-	beginTx func(context.Context) (pgx.Tx, error)
-	query   func(context.Context, string, ...any) (pgx.Rows, error)
+	beginTx  func(context.Context) (pgx.Tx, error)
+	queryRow func(context.Context, string, ...any) pgx.Row
+	query    func(context.Context, string, ...any) (pgx.Rows, error)
 }
 
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{
-		beginTx: pool.Begin,
-		query:   pool.Query,
+		beginTx:  pool.Begin,
+		queryRow: pool.QueryRow,
+		query:    pool.Query,
 	}
 }
 
