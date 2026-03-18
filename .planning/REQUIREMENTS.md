@@ -73,29 +73,29 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RUNT-01 | TBD | Pending |
-| RUNT-02 | TBD | Pending |
-| RUNT-03 | TBD | Pending |
-| TOOL-01 | TBD | Pending |
-| TOOL-02 | TBD | Pending |
-| TOOL-03 | TBD | Pending |
-| TOOL-04 | TBD | Pending |
-| SESS-01 | TBD | Pending |
-| SESS-02 | TBD | Pending |
-| SESS-03 | TBD | Pending |
-| INDX-01 | TBD | Pending |
-| INDX-02 | TBD | Pending |
-| INDX-03 | TBD | Pending |
-| INDX-04 | TBD | Pending |
-| SRCH-01 | TBD | Pending |
-| SRCH-02 | TBD | Pending |
-| SRCH-03 | TBD | Pending |
+| RUNT-01 | Phase 1 | Pending |
+| RUNT-02 | Phase 1 | Pending |
+| RUNT-03 | Phase 1 | Pending |
+| TOOL-01 | Phase 3 | Pending |
+| TOOL-02 | Phase 1 | Pending |
+| TOOL-03 | Phase 3 | Pending |
+| TOOL-04 | Phase 3 | Pending |
+| SESS-01 | Phase 2 | Pending |
+| SESS-02 | Phase 2 | Pending |
+| SESS-03 | Phase 2 | Pending |
+| INDX-01 | Phase 4 | Pending |
+| INDX-02 | Phase 5 | Pending |
+| INDX-03 | Phase 5 | Pending |
+| INDX-04 | Phase 4 | Pending |
+| SRCH-01 | Phase 6 | Pending |
+| SRCH-02 | Phase 6 | Pending |
+| SRCH-03 | Phase 6 | Pending |
 
 **Coverage:**
 - v1 requirements: 17 total
-- Mapped to phases: 0
-- Unmapped: 17
+- Mapped to phases: 17
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-18*
-*Last updated: 2026-03-18 after initial definition*
+*Last updated: 2026-03-18 after roadmap creation*
