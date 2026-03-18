@@ -151,6 +151,90 @@ func TestBuildSnapshotDeterministic(t *testing.T) {
 	}
 }
 
+func TestBuildSnapshotRootHashChangeDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		mutate     func(t *testing.T, repoRoot string)
+		wantChange bool
+	}{
+		{
+			name: "ignored file add does not change root hash",
+			mutate: func(t *testing.T, repoRoot string) {
+				t.Helper()
+				mustWriteFile(t, filepath.Join(repoRoot, "dist", "new-generated.md"), "ignored output\n")
+			},
+			wantChange: false,
+		},
+		{
+			name: "ignored file delete does not change root hash",
+			mutate: func(t *testing.T, repoRoot string) {
+				t.Helper()
+				path := filepath.Join(repoRoot, "dist", "generated.md")
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("Remove(%q) returned error: %v", path, err)
+				}
+			},
+			wantChange: false,
+		},
+		{
+			name: "indexable file add changes root hash",
+			mutate: func(t *testing.T, repoRoot string) {
+				t.Helper()
+				mustWriteFile(t, filepath.Join(repoRoot, "docs", "new.md"), "new doc\n")
+			},
+			wantChange: true,
+		},
+		{
+			name: "indexable file modify changes root hash",
+			mutate: func(t *testing.T, repoRoot string) {
+				t.Helper()
+				mustWriteFile(t, filepath.Join(repoRoot, "docs", "guide.txt"), "updated guide\n")
+			},
+			wantChange: true,
+		},
+		{
+			name: "indexable file delete changes root hash",
+			mutate: func(t *testing.T, repoRoot string) {
+				t.Helper()
+				path := filepath.Join(repoRoot, "README.md")
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("Remove(%q) returned error: %v", path, err)
+				}
+			},
+			wantChange: true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			baselineRepo := copyDiscoveryFixture(t)
+			mutatedRepo := copyDiscoveryFixture(t)
+
+			baselineSnapshot, err := BuildSnapshot(baselineRepo)
+			if err != nil {
+				t.Fatalf("BuildSnapshot(%q) baseline returned error: %v", baselineRepo, err)
+			}
+
+			tc.mutate(t, mutatedRepo)
+
+			mutatedSnapshot, err := BuildSnapshot(mutatedRepo)
+			if err != nil {
+				t.Fatalf("BuildSnapshot(%q) mutated returned error: %v", mutatedRepo, err)
+			}
+
+			gotChange := baselineSnapshot.RootHash != mutatedSnapshot.RootHash
+			if gotChange != tc.wantChange {
+				t.Fatalf("root hash change = %t, want %t (baseline=%q mutated=%q)", gotChange, tc.wantChange, baselineSnapshot.RootHash, mutatedSnapshot.RootHash)
+			}
+		})
+	}
+}
+
 func TestHashNodeTreeIgnoresEntryOrder(t *testing.T) {
 	t.Parallel()
 
