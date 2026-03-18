@@ -2,9 +2,13 @@ package retrieval
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Nickbohm555/deep-agent-cli/internal/embeddings"
 )
 
 func TestSemanticRetrievalContracts(t *testing.T) {
@@ -206,5 +210,182 @@ func TestApplyStableRanks(t *testing.T) {
 
 	if input[0].Rank != 99 || input[1].Rank != 88 || input[2].Rank != 77 || input[3].Rank != 66 {
 		t.Fatalf("ApplyStableRanks() mutated input ranks: %#v", input)
+	}
+}
+
+func TestServiceQueryIndexNotReady(t *testing.T) {
+	t.Parallel()
+
+	snapshotID := int64(17)
+	updatedAt := time.Date(2026, time.March, 18, 12, 0, 0, 0, time.UTC)
+	readiness := &stubReadinessChecker{
+		resp: SemanticIndexReadiness{
+			Ready:      false,
+			SnapshotID: &snapshotID,
+			UpdatedAt:  &updatedAt,
+		},
+	}
+	embedder := &stubQueryEmbedder{}
+	store := &stubQueryStore{}
+	service := NewOrchestratedService(readiness, embedder, store)
+
+	resp, err := service.Query(context.Background(), SemanticQueryRequest{
+		SessionID: " session-1 ",
+		RepoRoot:  " /repo/project ",
+		Query:     " where is the registry ",
+		TopK:      3,
+	})
+	if err != nil {
+		t.Fatalf("Query returned error: %v", err)
+	}
+
+	if readiness.calls != 1 {
+		t.Fatalf("readiness calls = %d, want 1", readiness.calls)
+	}
+	if readiness.sessionID != "session-1" || readiness.repoRoot != "/repo/project" {
+		t.Fatalf("readiness scope = %q %q, want trimmed request scope", readiness.sessionID, readiness.repoRoot)
+	}
+	if embedder.calls != 0 {
+		t.Fatalf("embedder calls = %d, want 0 when index is not ready", embedder.calls)
+	}
+	if store.calls != 0 {
+		t.Fatalf("store calls = %d, want 0 when index is not ready", store.calls)
+	}
+	if resp.Index.Ready {
+		t.Fatal("Index.Ready = true, want false")
+	}
+	if resp.Index.Status != "index_not_ready" {
+		t.Fatalf("Index.Status = %q, want index_not_ready", resp.Index.Status)
+	}
+	if resp.Index.SnapshotID == nil || *resp.Index.SnapshotID != snapshotID {
+		t.Fatalf("SnapshotID = %v, want %d", resp.Index.SnapshotID, snapshotID)
+	}
+	if resp.Index.UpdatedAt == nil || !resp.Index.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt = %v, want %v", resp.Index.UpdatedAt, updatedAt)
+	}
+	if len(resp.Results) != 0 {
+		t.Fatalf("len(Results) = %d, want 0", len(resp.Results))
+	}
+}
+
+func TestServiceQueryRanksDeterministically(t *testing.T) {
+	t.Parallel()
+
+	service := NewOrchestratedService(
+		&stubReadinessChecker{
+			resp: SemanticIndexReadiness{
+				Ready:  true,
+				Status: "ready",
+			},
+		},
+		&stubQueryEmbedder{
+			vector: []float32{0.1, 0.2, 0.3},
+		},
+		&stubQueryStore{
+			results: []SemanticQueryResult{
+				{Rank: 88, FilePath: "beta.go", ChunkID: "beta.go#2", Score: 0.8, Snippet: "beta"},
+				{Rank: 77, FilePath: "alpha.go", ChunkID: "alpha.go#2", Score: 0.9, Snippet: strings.Repeat("x", MaxSnippetLength+5)},
+				{Rank: 66, FilePath: "alpha.go", ChunkID: "alpha.go#1", Score: 0.9, Snippet: "alpha"},
+			},
+		},
+	)
+
+	resp, err := service.Query(context.Background(), SemanticQueryRequest{
+		SessionID: "session-1",
+		RepoRoot:  "/repo/project",
+		Query:     "where is the registry",
+		TopK:      3,
+	})
+	if err != nil {
+		t.Fatalf("Query returned error: %v", err)
+	}
+
+	if resp.Index.Status != "ready" {
+		t.Fatalf("Index.Status = %q, want ready", resp.Index.Status)
+	}
+	if len(resp.Results) != 3 {
+		t.Fatalf("len(Results) = %d, want 3", len(resp.Results))
+	}
+
+	want := []SemanticQueryResult{
+		{Rank: 1, FilePath: "alpha.go", ChunkID: "alpha.go#1", Score: 0.9, Snippet: "alpha"},
+		{Rank: 2, FilePath: "alpha.go", ChunkID: "alpha.go#2", Score: 0.9, Snippet: strings.Repeat("x", MaxSnippetLength)},
+		{Rank: 3, FilePath: "beta.go", ChunkID: "beta.go#2", Score: 0.8, Snippet: "beta"},
+	}
+	if !reflect.DeepEqual(resp.Results, want) {
+		t.Fatalf("Results = %#v, want %#v", resp.Results, want)
+	}
+}
+
+type stubReadinessChecker struct {
+	resp      SemanticIndexReadiness
+	err       error
+	calls     int
+	sessionID string
+	repoRoot  string
+}
+
+func (s *stubReadinessChecker) GetReadiness(_ context.Context, sessionID, repoRoot string) (SemanticIndexReadiness, error) {
+	s.calls++
+	s.sessionID = sessionID
+	s.repoRoot = repoRoot
+	return s.resp, s.err
+}
+
+type stubQueryEmbedder struct {
+	vector []float32
+	err    error
+	calls  int
+	query  []string
+}
+
+func (s *stubQueryEmbedder) EmbedTexts(_ context.Context, texts []string) (embeddings.Result, error) {
+	s.calls++
+	s.query = append([]string(nil), texts...)
+	if s.err != nil {
+		return embeddings.Result{}, s.err
+	}
+	return embeddings.Result{
+		Model:      "test-model",
+		Dimensions: len(s.vector),
+		Vectors:    [][]float32{append([]float32(nil), s.vector...)},
+	}, nil
+}
+
+type stubQueryStore struct {
+	results []SemanticQueryResult
+	err     error
+	calls   int
+	req     SemanticQueryRequest
+	vector  []float32
+}
+
+func (s *stubQueryStore) QueryTopK(_ context.Context, req SemanticQueryRequest, queryVector []float32) ([]SemanticQueryResult, error) {
+	s.calls++
+	s.req = req
+	s.vector = append([]float32(nil), queryVector...)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]SemanticQueryResult(nil), s.results...), nil
+}
+
+func TestServiceQueryPropagatesReadinessErrors(t *testing.T) {
+	t.Parallel()
+
+	service := NewOrchestratedService(
+		&stubReadinessChecker{err: errors.New("boom")},
+		&stubQueryEmbedder{vector: []float32{0.1}},
+		&stubQueryStore{},
+	)
+
+	_, err := service.Query(context.Background(), SemanticQueryRequest{
+		SessionID: "session-1",
+		RepoRoot:  "/repo/project",
+		Query:     "where is the registry",
+		TopK:      1,
+	})
+	if err == nil || err.Error() != "check index readiness: boom" {
+		t.Fatalf("Query error = %v, want readiness error", err)
 	}
 }
