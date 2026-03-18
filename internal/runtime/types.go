@@ -6,7 +6,7 @@ type ExecutionMode string
 
 const (
 	ExecutionModeInteractive ExecutionMode = "interactive"
-	ExecutionModeHeadless    ExecutionMode = "headless"
+	ExecutionModeOneShot     ExecutionMode = "oneshot"
 )
 
 type StopReason string
