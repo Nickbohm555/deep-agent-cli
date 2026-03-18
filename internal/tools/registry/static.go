@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/handlers"
 )
 
 const (
@@ -18,25 +19,29 @@ var staticTools = []runtime.ToolDefinition{
 	{
 		Name:        "read_file",
 		Description: "Read the contents of a given relative file path. Use this when you want to see what's inside a file. Do not use this with directory names.",
-		Schema:      GenerateSchema[ReadFileInput](),
+		Schema:      GenerateSchema[handlers.ReadFileInput](),
+		Handler:     handlers.ReadFile,
 		HandlerName: ReadFileHandlerName,
 	},
 	{
 		Name:        "list_files",
 		Description: "List files and directories at a given path. If the path is empty, list files in the current directory.",
-		Schema:      GenerateSchema[ListFilesInput](),
+		Schema:      GenerateSchema[handlers.ListFilesInput](),
+		Handler:     handlers.ListFiles,
 		HandlerName: ListFilesHandlerName,
 	},
 	{
 		Name:        "bash",
 		Description: "Execute a bash command and return its output. Use this to run shell commands.",
-		Schema:      GenerateSchema[BashInput](),
+		Schema:      GenerateSchema[handlers.BashInput](),
+		Handler:     handlers.Bash,
 		HandlerName: BashHandlerName,
 	},
 	{
 		Name:        "code_search",
 		Description: "Search for code patterns using ripgrep. Use this to find function definitions, variable usage, or text in the repository.",
-		Schema:      GenerateSchema[CodeSearchInput](),
+		Schema:      GenerateSchema[handlers.CodeSearchInput](),
+		Handler:     handlers.CodeSearch,
 		HandlerName: CodeSearchHandlerName,
 	},
 }

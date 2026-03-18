@@ -2,8 +2,15 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/handlers"
 )
 
 func TestRegistryListsExpectedTools(t *testing.T) {
@@ -36,8 +43,8 @@ func TestRegistryListsExpectedTools(t *testing.T) {
 		if tool.HandlerName != handlerName {
 			t.Fatalf("tool %s handler name = %q, want %q", tool.Name, tool.HandlerName, handlerName)
 		}
-		if tool.Handler != nil {
-			t.Fatalf("tool %s handler should not be bound before task 3", tool.Name)
+		if tool.Handler == nil {
+			t.Fatalf("tool %s handler should be bound for task 3", tool.Name)
 		}
 		if len(tool.Schema) == 0 {
 			t.Fatalf("tool %s missing schema", tool.Name)
@@ -58,6 +65,9 @@ func TestRegistryLookupTool(t *testing.T) {
 	if tool.HandlerName != CodeSearchHandlerName {
 		t.Fatalf("LookupTool handler name = %q, want %q", tool.HandlerName, CodeSearchHandlerName)
 	}
+	if tool.Handler == nil {
+		t.Fatal("LookupTool returned nil handler for code_search")
+	}
 
 	_, ok, err = registry.LookupTool(context.Background(), "missing")
 	if err != nil {
@@ -69,7 +79,7 @@ func TestRegistryLookupTool(t *testing.T) {
 }
 
 func TestSchemaGenerationIsStrict(t *testing.T) {
-	schema := GenerateSchema[CodeSearchInput]()
+	schema := GenerateSchema[handlers.CodeSearchInput]()
 
 	if got := schema["type"]; got != "object" {
 		t.Fatalf("schema type = %#v, want object", got)
@@ -111,5 +121,146 @@ func TestSchemaGenerationIsStrict(t *testing.T) {
 				t.Fatalf("nested property %s additionalProperties = %#v, want false", name, got)
 			}
 		}
+	}
+}
+
+func TestRegistryHandlersExecuteViaLookup(t *testing.T) {
+	registry := New()
+	tempDir := t.TempDir()
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if chdirErr := os.Chdir(originalWD); chdirErr != nil {
+			t.Fatalf("failed to restore working directory: %v", chdirErr)
+		}
+	})
+
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir returned error: %v", err)
+	}
+
+	if err := os.WriteFile("sample.txt", []byte("hello from handler"), 0o644); err != nil {
+		t.Fatalf("WriteFile sample.txt returned error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join("subdir", ".devenv"), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("subdir", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile main.go returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("subdir", ".devenv", "ignored.txt"), []byte("skip"), 0o644); err != nil {
+		t.Fatalf("WriteFile ignored.txt returned error: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		toolName   string
+		args       any
+		assertions func(t *testing.T, result runtime.ToolResult)
+	}{
+		{
+			name:     "read_file",
+			toolName: "read_file",
+			args: handlers.ReadFileInput{
+				Path: "sample.txt",
+			},
+			assertions: func(t *testing.T, result runtime.ToolResult) {
+				if result.Output != "hello from handler" {
+					t.Fatalf("read_file output = %q, want %q", result.Output, "hello from handler")
+				}
+				if result.IsError {
+					t.Fatal("read_file should not mark result as error")
+				}
+			},
+		},
+		{
+			name:     "list_files",
+			toolName: "list_files",
+			args: handlers.ListFilesInput{
+				Path: ".",
+			},
+			assertions: func(t *testing.T, result runtime.ToolResult) {
+				var files []string
+				if err := json.Unmarshal([]byte(result.Output), &files); err != nil {
+					t.Fatalf("list_files output is not valid json: %v", err)
+				}
+				joined := strings.Join(files, ",")
+				if !strings.Contains(joined, "sample.txt") {
+					t.Fatalf("list_files output missing sample.txt: %v", files)
+				}
+				if strings.Contains(joined, ".devenv") {
+					t.Fatalf("list_files output should skip .devenv entries: %v", files)
+				}
+			},
+		},
+		{
+			name:     "bash",
+			toolName: "bash",
+			args: handlers.BashInput{
+				Command: "printf 'bash ok'",
+			},
+			assertions: func(t *testing.T, result runtime.ToolResult) {
+				if result.Output != "bash ok" {
+					t.Fatalf("bash output = %q, want %q", result.Output, "bash ok")
+				}
+				if result.IsError {
+					t.Fatal("bash should not mark result as error")
+				}
+			},
+		},
+		{
+			name:     "code_search",
+			toolName: "code_search",
+			args: handlers.CodeSearchInput{
+				Pattern:  "func main",
+				Path:     "subdir",
+				FileType: "go",
+			},
+			assertions: func(t *testing.T, result runtime.ToolResult) {
+				if !strings.Contains(result.Output, "subdir/main.go:2:func main() {}") {
+					t.Fatalf("code_search output missing expected match: %q", result.Output)
+				}
+				if result.IsError {
+					t.Fatal("code_search should not mark result as error")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ok, err := registry.LookupTool(context.Background(), tc.toolName)
+			if err != nil {
+				t.Fatalf("LookupTool returned error: %v", err)
+			}
+			if !ok {
+				t.Fatalf("LookupTool did not find %s", tc.toolName)
+			}
+
+			rawArgs, err := json.Marshal(tc.args)
+			if err != nil {
+				t.Fatalf("Marshal returned error: %v", err)
+			}
+
+			result, err := tool.Handler(context.Background(), runtime.ToolCall{
+				ID:        "call-1",
+				Name:      tc.toolName,
+				Arguments: rawArgs,
+			})
+			if err != nil {
+				t.Fatalf("handler returned error: %v", err)
+			}
+			if result.CallID != "call-1" {
+				t.Fatalf("result CallID = %q, want call-1", result.CallID)
+			}
+			if result.Name != tc.toolName {
+				t.Fatalf("result Name = %q, want %q", result.Name, tc.toolName)
+			}
+
+			tc.assertions(t, result)
+		})
 	}
 }

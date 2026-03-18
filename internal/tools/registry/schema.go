@@ -8,25 +8,6 @@ import (
 	"github.com/invopop/jsonschema"
 )
 
-type ReadFileInput struct {
-	Path string `json:"path" jsonschema_description:"The relative path of a file in the working directory."`
-}
-
-type ListFilesInput struct {
-	Path string `json:"path,omitempty" jsonschema_description:"Relative path to list from. Use an empty string for the current directory."`
-}
-
-type BashInput struct {
-	Command string `json:"command" jsonschema_description:"The bash command to execute."`
-}
-
-type CodeSearchInput struct {
-	Pattern       string `json:"pattern" jsonschema_description:"The search pattern or regex to look for."`
-	Path          string `json:"path,omitempty" jsonschema_description:"Path to search in. Use an empty string to search the current directory."`
-	FileType      string `json:"file_type,omitempty" jsonschema_description:"Optional file extension or ripgrep type filter. Use an empty string for no filter."`
-	CaseSensitive bool   `json:"case_sensitive,omitempty" jsonschema_description:"Whether the search should be case sensitive."`
-}
-
 func GenerateSchema[T any]() map[string]any {
 	reflector := jsonschema.Reflector{
 		AllowAdditionalProperties: false,
