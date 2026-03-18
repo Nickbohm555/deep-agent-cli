@@ -13,6 +13,7 @@ import (
 	indexdiff "github.com/Nickbohm555/deep-agent-cli/internal/indexsync/diff"
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexsync/snapshot"
 	"github.com/Nickbohm555/deep-agent-cli/internal/jobs/contracts"
+	"github.com/Nickbohm555/deep-agent-cli/internal/observability"
 	riverqueue "github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -28,6 +29,7 @@ const (
 type JobOutcome struct {
 	Status        jobOutcomeStatus `json:"status"`
 	Kind          string           `json:"kind"`
+	JobID         int64            `json:"job_id,omitempty"`
 	SessionID     string           `json:"session_id"`
 	RepoRoot      string           `json:"repo_root"`
 	Attempt       int              `json:"attempt"`
@@ -36,6 +38,8 @@ type JobOutcome struct {
 	EnqueuedJobID int64            `json:"enqueued_job_id,omitempty"`
 	Duplicate     bool             `json:"duplicate,omitempty"`
 	ChangedCount  int              `json:"changed_count,omitempty"`
+	QueueLatency  time.Duration    `json:"queue_latency,omitempty"`
+	Duration      time.Duration    `json:"duration,omitempty"`
 	Message       string           `json:"message,omitempty"`
 	Error         string           `json:"error,omitempty"`
 }
@@ -58,6 +62,7 @@ type SyncWorker struct {
 	enqueuer      indexJobEnqueuer
 	buildSnapshot syncSnapshotBuilder
 	logger        *slog.Logger
+	metrics       *observability.IndexSyncMetrics
 }
 
 func NewSyncWorker(store syncSnapshotStore, enqueuer indexJobEnqueuer, logger *slog.Logger) *SyncWorker {
@@ -66,19 +71,24 @@ func NewSyncWorker(store syncSnapshotStore, enqueuer indexJobEnqueuer, logger *s
 		enqueuer:      enqueuer,
 		buildSnapshot: snapshot.BuildSnapshot,
 		logger:        logger,
+		metrics:       observability.DefaultIndexSyncMetrics(),
 	}
 }
 
 func (w *SyncWorker) Work(ctx context.Context, job *riverqueue.Job[syncJobArgs]) error {
+	startedAt := time.Now().UTC()
 	outcome, err := w.run(ctx, job)
+	w.finishOutcome(&outcome, startedAt)
 	switch {
 	case err == nil:
 		w.logOutcome(outcome)
+		w.recordMetrics(outcome)
 		return nil
 	case isRetryableWorkerError(err):
 		outcome.Status = jobOutcomeStatusRetry
 		outcome.Error = err.Error()
 		w.logOutcome(outcome)
+		w.recordMetrics(outcome)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, rivertype.ErrJobCancelledRemotely) {
 			return riverqueue.JobSnooze(0)
 		}
@@ -87,6 +97,7 @@ func (w *SyncWorker) Work(ctx context.Context, job *riverqueue.Job[syncJobArgs])
 		outcome.Status = jobOutcomeStatusFailure
 		outcome.Error = err.Error()
 		w.logOutcome(outcome)
+		w.recordMetrics(outcome)
 		return riverqueue.JobCancel(err)
 	}
 }
@@ -113,6 +124,9 @@ func (w *SyncWorker) run(ctx context.Context, job *riverqueue.Job[syncJobArgs]) 
 	}
 	outcome.SessionID = payload.SessionID
 	outcome.RepoRoot = payload.RepoRoot
+	if !payload.RequestedAt.IsZero() {
+		outcome.QueueLatency = time.Since(payload.RequestedAt)
+	}
 
 	current, err := w.buildSnapshot(payload.RepoRoot)
 	if err != nil {
@@ -199,12 +213,15 @@ func (w *SyncWorker) logOutcome(outcome JobOutcome) {
 	attrs := []any{
 		"kind", outcome.Kind,
 		"status", outcome.Status,
+		"job_id", outcome.JobID,
 		"session_id", outcome.SessionID,
 		"repo_root", outcome.RepoRoot,
 		"attempt", outcome.Attempt,
 		"snapshot_id", outcome.SnapshotID,
 		"root_hash", outcome.RootHash,
 		"changed_count", outcome.ChangedCount,
+		"queue_latency_ms", outcome.QueueLatency.Milliseconds(),
+		"duration_ms", outcome.Duration.Milliseconds(),
 		"enqueued_job_id", outcome.EnqueuedJobID,
 		"duplicate", outcome.Duplicate,
 	}
@@ -214,7 +231,43 @@ func (w *SyncWorker) logOutcome(outcome JobOutcome) {
 	if outcome.Error != "" {
 		attrs = append(attrs, "error", outcome.Error)
 	}
-	logger.Info("river worker outcome", attrs...)
+	switch outcome.Status {
+	case jobOutcomeStatusFailure:
+		logger.Error("river worker outcome", attrs...)
+	case jobOutcomeStatusRetry:
+		logger.Warn("river worker outcome", attrs...)
+	default:
+		logger.Info("river worker outcome", attrs...)
+	}
+}
+
+func (w *SyncWorker) finishOutcome(outcome *JobOutcome, startedAt time.Time) {
+	if outcome == nil {
+		return
+	}
+
+	outcome.Duration = time.Since(startedAt)
+	if outcome.JobID == 0 {
+		outcome.JobID = jobIDFromAttempt(outcome.Attempt)
+	}
+}
+
+func (w *SyncWorker) recordMetrics(outcome JobOutcome) {
+	if w == nil || w.metrics == nil {
+		return
+	}
+
+	w.metrics.RecordJobLifecycle(observability.IndexSyncMetricEvent{
+		Kind:       outcome.Kind,
+		Status:     string(outcome.Status),
+		SessionID:  outcome.SessionID,
+		RepoRoot:   outcome.RepoRoot,
+		JobID:      outcome.JobID,
+		Attempt:    outcome.Attempt,
+		SnapshotID: outcome.SnapshotID,
+		RootHash:   outcome.RootHash,
+		DeltaSize:  outcome.ChangedCount,
+	}, outcome.QueueLatency, outcome.Duration)
 }
 
 type workerConfigurationError struct {
@@ -246,9 +299,17 @@ func newJobOutcome[T riverqueue.JobArgs](kind, sessionID, repoRoot string, job *
 		RepoRoot:  normalizeRepoRoot(repoRoot),
 	}
 	if job != nil && job.JobRow != nil {
-		outcome.Attempt = job.Attempt
+		outcome.JobID = job.JobRow.ID
+		outcome.Attempt = job.JobRow.Attempt
 	}
 	return outcome
+}
+
+func jobIDFromAttempt(attempt int) int64 {
+	if attempt <= 0 {
+		return 0
+	}
+	return int64(attempt)
 }
 
 func normalizeSyncPayload(payload contracts.SyncJobPayload) (contracts.SyncJobPayload, error) {

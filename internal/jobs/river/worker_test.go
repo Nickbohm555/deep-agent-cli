@@ -1,11 +1,14 @@
 package river
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexsync"
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexsync/snapshot"
 	"github.com/Nickbohm555/deep-agent-cli/internal/jobs/contracts"
+	"github.com/Nickbohm555/deep-agent-cli/internal/observability"
 	riverqueue "github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -161,6 +165,128 @@ func TestIndexWorkerCrashAfterApplySkipsReplayOnRetry(t *testing.T) {
 	}
 	if runner.logicalUpdates != 1 {
 		t.Fatalf("logicalUpdates = %d, want 1", runner.logicalUpdates)
+	}
+}
+
+func TestSyncWorkerEmitsMetricsAndStructuredLogs(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	store := &memorySyncStore{}
+	enqueuer := &stubIndexEnqueuer{}
+	metrics := observability.NewIndexSyncMetrics()
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
+	worker := NewSyncWorker(store, enqueuer, logger)
+	worker.metrics = metrics
+
+	job := &riverqueue.Job[syncJobArgs]{
+		JobRow: &rivertype.JobRow{ID: 42, Attempt: 2},
+		Args: newSyncJobArgs(contracts.SyncJobPayload{
+			SessionID:   "session-obs",
+			RepoRoot:    repoRoot,
+			RequestedAt: time.Now().UTC().Add(-2 * time.Second),
+			Trigger:     "manual",
+		}),
+	}
+
+	if err := worker.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work returned error: %v", err)
+	}
+
+	snapshot := metrics.Snapshot()
+	if got := snapshot.Counters[observability.MetricJobCompletionsTotal+"|index_sync|success"]; got != 1 {
+		t.Fatalf("completion counter = %v, want 1", got)
+	}
+	if got := snapshot.Counters[observability.MetricSyncJobDurationSeconds+"|index_sync|success"]; got <= 0 {
+		t.Fatalf("duration counter = %v, want > 0", got)
+	}
+	if got := snapshot.Counters[observability.MetricJobQueueLatencySeconds+"|index_sync|success"]; got < 1.5 {
+		t.Fatalf("queue latency counter = %v, want >= 1.5", got)
+	}
+	if got := snapshot.Counters[observability.MetricDeltaSize+"|index_sync|success"]; got != 1 {
+		t.Fatalf("delta size counter = %v, want 1", got)
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		"\"kind\":\"index_sync\"",
+		"\"job_id\":42",
+		"\"session_id\":\"session-obs\"",
+		"\"root_hash\":",
+		"\"queue_latency_ms\":",
+		"\"duration_ms\":",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output missing %q: %s", want, logOutput)
+		}
+	}
+}
+
+func TestIndexWorkerEmitsRetryMetricsAndErrorLogs(t *testing.T) {
+	t.Parallel()
+
+	runner := &stubIndexRunner{
+		failCalls: map[int]error{
+			1: errors.New("transient delta apply failure"),
+		},
+	}
+	metrics := observability.NewIndexSyncMetrics()
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
+	worker := NewIndexWorker(runner.Run, logger)
+	worker.metrics = metrics
+
+	job := &riverqueue.Job[indexJobArgs]{
+		JobRow: &rivertype.JobRow{ID: 84, Attempt: 3},
+		Args: newIndexJobArgs(contracts.IndexJobPayload{
+			SessionID:   "session-retry",
+			RepoRoot:    "/repo/project",
+			SnapshotID:  17,
+			RootHash:    "root-17",
+			RequestedAt: time.Now().UTC().Add(-3 * time.Second),
+			Delta: indexsync.SyncDelta{
+				Changes: []indexsync.DeltaRecord{
+					{Path: "docs/guide.md", Action: indexsync.DeltaActionModify},
+				},
+			},
+		}),
+	}
+
+	if err := worker.Work(context.Background(), job); err == nil {
+		t.Fatal("Work returned nil error, want retryable error")
+	}
+
+	snapshot := metrics.Snapshot()
+	if got := snapshot.Counters[observability.MetricJobRetriesTotal+"|index_apply_delta|retry"]; got != 1 {
+		t.Fatalf("retry counter = %v, want 1", got)
+	}
+	if got := snapshot.Counters[observability.MetricIndexJobDurationSeconds+"|index_apply_delta|retry"]; got <= 0 {
+		t.Fatalf("duration counter = %v, want > 0", got)
+	}
+	if got := snapshot.Counters[observability.MetricJobQueueLatencySeconds+"|index_apply_delta|retry"]; got < 2.5 {
+		t.Fatalf("queue latency counter = %v, want >= 2.5", got)
+	}
+	if got := snapshot.Counters[observability.MetricDeltaSize+"|index_apply_delta|retry"]; got != 1 {
+		t.Fatalf("delta size counter = %v, want 1", got)
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		"\"level\":\"WARN\"",
+		"\"kind\":\"index_apply_delta\"",
+		"\"job_id\":84",
+		"\"snapshot_id\":17",
+		"\"root_hash\":\"root-17\"",
+		"\"error\":\"run index apply: transient delta apply failure\"",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output missing %q: %s", want, logOutput)
+		}
 	}
 }
 

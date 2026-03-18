@@ -10,6 +10,7 @@ import (
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexing"
 	"github.com/Nickbohm555/deep-agent-cli/internal/jobs/contracts"
+	"github.com/Nickbohm555/deep-agent-cli/internal/observability"
 	riverqueue "github.com/riverqueue/river"
 )
 
@@ -91,6 +92,7 @@ type IndexWorker struct {
 	run        indexRunner
 	checkpoint indexApplyCheckpoint
 	logger     *slog.Logger
+	metrics    *observability.IndexSyncMetrics
 	afterApply func(context.Context, contracts.IndexJobPayload, indexing.DeltaApplyResult) error
 }
 
@@ -103,24 +105,30 @@ func NewIndexWorkerWithCheckpoint(run indexRunner, checkpoint indexApplyCheckpoi
 		run:        run,
 		checkpoint: checkpoint,
 		logger:     logger,
+		metrics:    observability.DefaultIndexSyncMetrics(),
 	}
 }
 
 func (w *IndexWorker) Work(ctx context.Context, job *riverqueue.Job[indexJobArgs]) error {
+	startedAt := time.Now().UTC()
 	outcome, err := w.runJob(ctx, job)
+	w.finishOutcome(&outcome, startedAt)
 	switch {
 	case err == nil:
 		w.logOutcome(outcome)
+		w.recordMetrics(outcome)
 		return nil
 	case isRetryableWorkerError(err):
 		outcome.Status = jobOutcomeStatusRetry
 		outcome.Error = err.Error()
 		w.logOutcome(outcome)
+		w.recordMetrics(outcome)
 		return err
 	default:
 		outcome.Status = jobOutcomeStatusFailure
 		outcome.Error = err.Error()
 		w.logOutcome(outcome)
+		w.recordMetrics(outcome)
 		return riverqueue.JobCancel(err)
 	}
 }
@@ -147,6 +155,9 @@ func (w *IndexWorker) runJob(ctx context.Context, job *riverqueue.Job[indexJobAr
 	outcome.SnapshotID = payload.SnapshotID
 	outcome.RootHash = payload.RootHash
 	outcome.ChangedCount = len(payload.Delta.Changes)
+	if !payload.RequestedAt.IsZero() {
+		outcome.QueueLatency = time.Since(payload.RequestedAt)
+	}
 
 	if len(payload.Delta.Changes) == 0 {
 		outcome.Message = "delta is empty; skipping apply"
@@ -192,12 +203,15 @@ func (w *IndexWorker) logOutcome(outcome JobOutcome) {
 	attrs := []any{
 		"kind", outcome.Kind,
 		"status", outcome.Status,
+		"job_id", outcome.JobID,
 		"session_id", outcome.SessionID,
 		"repo_root", outcome.RepoRoot,
 		"attempt", outcome.Attempt,
 		"snapshot_id", outcome.SnapshotID,
 		"root_hash", outcome.RootHash,
 		"changed_count", outcome.ChangedCount,
+		"queue_latency_ms", outcome.QueueLatency.Milliseconds(),
+		"duration_ms", outcome.Duration.Milliseconds(),
 	}
 	if outcome.Message != "" {
 		attrs = append(attrs, "message", outcome.Message)
@@ -205,7 +219,43 @@ func (w *IndexWorker) logOutcome(outcome JobOutcome) {
 	if outcome.Error != "" {
 		attrs = append(attrs, "error", outcome.Error)
 	}
-	logger.Info("river worker outcome", attrs...)
+	switch outcome.Status {
+	case jobOutcomeStatusFailure:
+		logger.Error("river worker outcome", attrs...)
+	case jobOutcomeStatusRetry:
+		logger.Warn("river worker outcome", attrs...)
+	default:
+		logger.Info("river worker outcome", attrs...)
+	}
+}
+
+func (w *IndexWorker) finishOutcome(outcome *JobOutcome, startedAt time.Time) {
+	if outcome == nil {
+		return
+	}
+
+	outcome.Duration = time.Since(startedAt)
+	if outcome.JobID == 0 {
+		outcome.JobID = jobIDFromAttempt(outcome.Attempt)
+	}
+}
+
+func (w *IndexWorker) recordMetrics(outcome JobOutcome) {
+	if w == nil || w.metrics == nil {
+		return
+	}
+
+	w.metrics.RecordJobLifecycle(observability.IndexSyncMetricEvent{
+		Kind:       outcome.Kind,
+		Status:     string(outcome.Status),
+		SessionID:  outcome.SessionID,
+		RepoRoot:   outcome.RepoRoot,
+		JobID:      outcome.JobID,
+		Attempt:    outcome.Attempt,
+		SnapshotID: outcome.SnapshotID,
+		RootHash:   outcome.RootHash,
+		DeltaSize:  outcome.ChangedCount,
+	}, outcome.QueueLatency, outcome.Duration)
 }
 
 func normalizeIndexPayload(payload contracts.IndexJobPayload) (contracts.IndexJobPayload, error) {
