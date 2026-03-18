@@ -341,4 +341,4 @@ Current section to work on: section 44. (move +1 after each turn)
 - Research: `.planning/phases/06-semantic-retrieval-vertical-slice/06-RESEARCH.md`
 - Steps: load research; execute Task 2 action; run Task 2 verify; ensure Task 2 done; write `.loop-commit-msg` as `06-05-task2`; update `.planning/STATE.md` with `phase=06-semantic-retrieval-vertical-slice`, `plan=06-05`, `task=2`, `status=implemented`.
 Tasks are in **required implementation order** (1...n). Each section = one context window. Complete one section at a time.
-Current section to work on: section 36. (move +1 after each turn)
+Current section to work on: section 37. (move +1 after each turn)

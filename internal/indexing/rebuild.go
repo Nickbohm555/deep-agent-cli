@@ -12,12 +12,6 @@ import (
 	"github.com/Nickbohm555/deep-agent-cli/internal/session"
 )
 
-const (
-	defaultChunkMaxChars     = 1200
-	defaultChunkMaxLines     = 40
-	defaultChunkOverlapLines = 5
-)
-
 type rebuildEmbedder interface {
 	EmbedTexts(context.Context, []string) (embeddings.Result, error)
 }
@@ -90,7 +84,7 @@ func (r *Rebuilder) RunFullRebuild(ctx context.Context, sessionID, repoRoot stri
 			return FullRebuildResult{}, err
 		}
 
-		chunks := chunkTextDeterministically(string(content))
+		chunks := ChunkDocument(string(content))
 		if len(chunks) == 0 {
 			continue
 		}
@@ -174,59 +168,4 @@ func (r *Rebuilder) readRepoFile(repoRoot, relPath string) ([]byte, error) {
 	}
 
 	return data, nil
-}
-
-func chunkTextDeterministically(content string) []Chunk {
-	normalized := strings.ReplaceAll(content, "\r\n", "\n")
-	if strings.TrimSpace(normalized) == "" {
-		return nil
-	}
-
-	lines := strings.SplitAfter(normalized, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-
-	chunks := make([]Chunk, 0, max(1, len(lines)/defaultChunkMaxLines+1))
-	start := 0
-	for start < len(lines) {
-		end := start
-		charCount := 0
-		for end < len(lines) {
-			nextChars := charCount + len(lines[end])
-			nextLineCount := end - start + 1
-			if end > start && (nextChars > defaultChunkMaxChars || nextLineCount > defaultChunkMaxLines) {
-				break
-			}
-			charCount = nextChars
-			end++
-			if charCount >= defaultChunkMaxChars || nextLineCount >= defaultChunkMaxLines {
-				break
-			}
-		}
-
-		if end == start {
-			end = start + 1
-		}
-
-		chunkContent := strings.TrimSpace(strings.Join(lines[start:end], ""))
-		if chunkContent != "" {
-			chunks = append(chunks, Chunk{
-				Index:   len(chunks),
-				Content: chunkContent,
-			})
-		}
-
-		if end >= len(lines) {
-			break
-		}
-
-		nextStart := end - defaultChunkOverlapLines
-		if nextStart <= start {
-			nextStart = end
-		}
-		start = nextStart
-	}
-
-	return chunks
 }
