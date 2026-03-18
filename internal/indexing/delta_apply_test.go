@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Nickbohm555/deep-agent-cli/internal/embeddings"
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexstore"
 	"github.com/Nickbohm555/deep-agent-cli/internal/indexsync"
 	"github.com/Nickbohm555/deep-agent-cli/internal/session"
@@ -119,6 +120,13 @@ func TestApplyDeltaToIndexOperations(t *testing.T) {
 			}
 
 			applier := NewDeltaApplier(store)
+			applier.embedder = &stubDeltaApplyEmbedder{
+				result: embeddings.Result{
+					Model:      "test-embedding-model",
+					Dimensions: 3,
+					Vectors:    [][]float32{{1, 2, 3}, {4, 5, 6}},
+				},
+			}
 			var reads []string
 			applier.readFile = func(path string) ([]byte, error) {
 				reads = append(reads, filepath.Base(path))
@@ -181,6 +189,13 @@ func TestApplyDeltaIdempotent(t *testing.T) {
 	}
 
 	applier := NewDeltaApplier(store)
+	applier.embedder = &stubDeltaApplyEmbedder{
+		result: embeddings.Result{
+			Model:      "test-embedding-model",
+			Dimensions: 3,
+			Vectors:    [][]float32{{1, 2, 3}},
+		},
+	}
 	first, err := applier.ApplyDeltaToIndex(context.Background(), "session-1", repoRoot, delta)
 	if err != nil {
 		t.Fatalf("first ApplyDeltaToIndex returned error: %v", err)
@@ -203,6 +218,161 @@ func TestApplyDeltaIdempotent(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("final chunk contents = %#v, want %#v", got, want)
+	}
+}
+
+func TestRefreshEmbeddingsForChangedChunks_PreservesUnchangedChunks(t *testing.T) {
+	t.Parallel()
+
+	existing := []indexstore.ChunkRecord{
+		{
+			SessionID:     "session-1",
+			RepoRoot:      "/repo",
+			RelPath:       "multi.md",
+			ChunkIndex:    0,
+			Content:       "alpha",
+			ContentHash:   chunkContentHash("multi.md", 0, "alpha"),
+			Model:         "existing-model",
+			EmbeddingDims: 2,
+			Embedding:     []float32{0.1, 0.2},
+		},
+		{
+			SessionID:     "session-1",
+			RepoRoot:      "/repo",
+			RelPath:       "multi.md",
+			ChunkIndex:    1,
+			Content:       "beta",
+			ContentHash:   chunkContentHash("multi.md", 1, "beta"),
+			Model:         "existing-model",
+			EmbeddingDims: 2,
+			Embedding:     []float32{0.3, 0.4},
+		},
+	}
+	records := []indexstore.ChunkRecordInput{
+		{
+			SessionID:   "session-1",
+			RepoRoot:    "/repo",
+			RelPath:     "multi.md",
+			ChunkIndex:  0,
+			Content:     "alpha",
+			ContentHash: chunkContentHash("multi.md", 0, "alpha"),
+		},
+		{
+			SessionID:   "session-1",
+			RepoRoot:    "/repo",
+			RelPath:     "multi.md",
+			ChunkIndex:  1,
+			Content:     "beta updated",
+			ContentHash: chunkContentHash("multi.md", 1, "beta updated"),
+		},
+	}
+	embedder := &stubDeltaApplyEmbedder{
+		result: embeddings.Result{
+			Model:      "test-embedding-model",
+			Dimensions: 3,
+			Vectors:    [][]float32{{9, 8, 7}},
+		},
+	}
+
+	refreshed, err := RefreshEmbeddingsForChangedChunks(context.Background(), existing, records, embedder)
+	if err != nil {
+		t.Fatalf("RefreshEmbeddingsForChangedChunks returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(embedder.calls, [][]string{{"beta updated"}}) {
+		t.Fatalf("embedder calls = %#v, want only changed chunk", embedder.calls)
+	}
+
+	if len(refreshed) != 2 {
+		t.Fatalf("refreshed chunk count = %d, want 2", len(refreshed))
+	}
+
+	first := refreshed[0]
+	second := refreshed[1]
+	if first.Model != "existing-model" || first.EmbeddingDims != 2 || !reflect.DeepEqual(first.Embedding, []float32{0.1, 0.2}) {
+		t.Fatalf("unchanged chunk embedding = %#v, want preserved embedding", first)
+	}
+	if second.Model != "test-embedding-model" || second.EmbeddingDims != 3 || !reflect.DeepEqual(second.Embedding, []float32{9, 8, 7}) {
+		t.Fatalf("changed chunk embedding = %#v, want refreshed embedding", second)
+	}
+}
+
+func TestApplyDeltaToIndex_DeleteOnlySkipsEmbeddingAndRemovesChunks(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+
+	canonicalRoot, err := session.CanonicalizeRepoRoot(repoRoot)
+	if err != nil {
+		t.Fatalf("CanonicalizeRepoRoot returned error: %v", err)
+	}
+
+	store := &stubDeltaApplyStore{
+		listed: []indexstore.ChunkRecord{
+			newDeltaChunkRecord("session-1", canonicalRoot, "keep.md", 0, "keep", "hash-keep"),
+			newDeltaChunkRecord("session-1", canonicalRoot, "delete.md", 0, "delete", "hash-delete"),
+		},
+	}
+	embedder := &stubDeltaApplyEmbedder{}
+
+	applier := NewDeltaApplier(store)
+	applier.embedder = embedder
+
+	_, err = applier.ApplyDeltaToIndex(context.Background(), "session-1", repoRoot, indexsync.SyncDelta{
+		SessionID: "session-1",
+		RepoRoot:  canonicalRoot,
+		Changes: []indexsync.DeltaRecord{
+			{Path: "delete.md", Action: indexsync.DeltaActionDelete, NodeType: indexsync.NodeTypeFile},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyDeltaToIndex returned error: %v", err)
+	}
+
+	if len(embedder.calls) != 0 {
+		t.Fatalf("embedder calls = %#v, want zero calls", embedder.calls)
+	}
+
+	got := chunkContentsByPath(store.replaced)
+	want := map[string][]string{"keep.md": {"keep"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final chunk contents = %#v, want %#v", got, want)
+	}
+}
+
+func TestApplyDeltaToIndex_NoChangesSkipsEmbeddingRefresh(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+
+	canonicalRoot, err := session.CanonicalizeRepoRoot(repoRoot)
+	if err != nil {
+		t.Fatalf("CanonicalizeRepoRoot returned error: %v", err)
+	}
+
+	store := &stubDeltaApplyStore{
+		listed: []indexstore.ChunkRecord{
+			newDeltaChunkRecord("session-1", canonicalRoot, "keep.md", 0, "keep", "hash-keep"),
+		},
+	}
+	embedder := &stubDeltaApplyEmbedder{}
+
+	applier := NewDeltaApplier(store)
+	applier.embedder = embedder
+
+	result, err := applier.ApplyDeltaToIndex(context.Background(), "session-1", repoRoot, indexsync.SyncDelta{
+		SessionID: "session-1",
+		RepoRoot:  canonicalRoot,
+	})
+	if err != nil {
+		t.Fatalf("ApplyDeltaToIndex returned error: %v", err)
+	}
+
+	if result.FilesTouched != 0 {
+		t.Fatalf("FilesTouched = %d, want 0", result.FilesTouched)
+	}
+	if len(embedder.calls) != 0 {
+		t.Fatalf("embedder calls = %#v, want zero calls", embedder.calls)
 	}
 }
 
@@ -282,4 +452,39 @@ func writeTestFile(t *testing.T, repoRoot, relPath, content string) {
 	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) returned error: %v", relPath, err)
 	}
+}
+
+type stubDeltaApplyEmbedder struct {
+	result embeddings.Result
+	err    error
+	calls  [][]string
+}
+
+func (s *stubDeltaApplyEmbedder) EmbedTexts(_ context.Context, texts []string) (embeddings.Result, error) {
+	s.calls = append(s.calls, append([]string(nil), texts...))
+	if s.err != nil {
+		return embeddings.Result{}, s.err
+	}
+	if len(s.result.Vectors) != 0 && len(s.result.Vectors) != len(texts) {
+		generated := embeddings.Result{
+			Model:      s.result.Model,
+			Dimensions: s.result.Dimensions,
+			Vectors:    make([][]float32, len(texts)),
+		}
+		if generated.Model == "" {
+			generated.Model = "test-embedding-model"
+		}
+		if generated.Dimensions <= 0 {
+			generated.Dimensions = 3
+		}
+		for i := range generated.Vectors {
+			vector := make([]float32, generated.Dimensions)
+			for j := range vector {
+				vector[j] = float32(i + j + 1)
+			}
+			generated.Vectors[i] = vector
+		}
+		return generated, nil
+	}
+	return s.result, nil
 }

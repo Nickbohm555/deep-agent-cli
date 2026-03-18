@@ -28,6 +28,7 @@ type DeltaApplyResult struct {
 type DeltaApplier struct {
 	store    deltaApplyStore
 	readFile func(string) ([]byte, error)
+	embedder deltaApplyEmbedder
 }
 
 func NewDeltaApplier(store deltaApplyStore) *DeltaApplier {
@@ -85,7 +86,17 @@ func (a *DeltaApplier) ApplyDeltaToIndex(ctx context.Context, sessionID, repoRoo
 		})
 	}
 
-	merged, err := BuildChunkDelta(sessionID, canonicalRoot, existing, documents, deletePaths)
+	refreshedRecords, err := BuildChunkRecords(sessionID, canonicalRoot, documents)
+	if err != nil {
+		return DeltaApplyResult{}, fmt.Errorf("apply delta to index: build chunk records: %w", err)
+	}
+
+	refreshedRecords, err = RefreshEmbeddingsForChangedChunks(ctx, existing, refreshedRecords, a.embedder)
+	if err != nil {
+		return DeltaApplyResult{}, fmt.Errorf("apply delta to index: %w", err)
+	}
+
+	merged, err := mergeChunkRecords(sessionID, canonicalRoot, existing, refreshedRecords, deletePaths)
 	if err != nil {
 		return DeltaApplyResult{}, fmt.Errorf("apply delta to index: %w", err)
 	}
