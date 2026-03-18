@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/sandbox"
 )
 
 type ListFilesInput struct {
@@ -33,13 +34,29 @@ func ListFiles(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, 
 		dir = input.Path
 	}
 
+	repoRoot, err := runtime.RepoRootFromContext(ctx)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	resolution, err := sandbox.EnforceRepoScope(repoRoot, sandbox.ScopeTarget{
+		ToolName:  call.Name,
+		Operation: "list",
+		Path:      dir,
+	})
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
 	files := make([]string, 0)
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(resolution.ResolvedPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		relPath, err := filepath.Rel(dir, path)
+		relPath, err := filepath.Rel(resolution.ResolvedPath, path)
 		if err != nil {
 			return err
 		}

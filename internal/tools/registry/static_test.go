@@ -245,7 +245,12 @@ func TestRegistryHandlersExecuteViaLookup(t *testing.T) {
 				t.Fatalf("Marshal returned error: %v", err)
 			}
 
-			result, err := tool.Handler(context.Background(), runtime.ToolCall{
+			ctx, err := runtime.WithRepoRoot(context.Background(), tempDir)
+			if err != nil {
+				t.Fatalf("WithRepoRoot returned error: %v", err)
+			}
+
+			result, err := tool.Handler(ctx, runtime.ToolCall{
 				ID:        "call-1",
 				Name:      tc.toolName,
 				Arguments: rawArgs,

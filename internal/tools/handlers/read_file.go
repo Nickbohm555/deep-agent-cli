@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/sandbox"
 )
 
 type ReadFileInput struct {
@@ -33,7 +34,23 @@ func ReadFile(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, e
 		return result, err
 	}
 
-	fileInfo, err := os.Stat(input.Path)
+	repoRoot, err := runtime.RepoRootFromContext(ctx)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	resolution, err := sandbox.EnforceRepoScope(repoRoot, sandbox.ScopeTarget{
+		ToolName:  call.Name,
+		Operation: "read",
+		Path:      input.Path,
+	})
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	fileInfo, err := os.Stat(resolution.ResolvedPath)
 	if err != nil {
 		result.IsError = true
 		return result, err
@@ -44,7 +61,7 @@ func ReadFile(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult, e
 		return result, err
 	}
 
-	content, err := os.ReadFile(input.Path)
+	content, err := os.ReadFile(resolution.ResolvedPath)
 	if err != nil {
 		result.IsError = true
 		return result, err

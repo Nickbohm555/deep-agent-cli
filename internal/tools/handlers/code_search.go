@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/Nickbohm555/deep-agent-cli/internal/runtime"
+	"github.com/Nickbohm555/deep-agent-cli/internal/tools/sandbox"
 )
 
 type CodeSearchInput struct {
@@ -35,6 +37,27 @@ func CodeSearch(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult,
 		return result, err
 	}
 
+	repoRoot, err := runtime.RepoRootFromContext(ctx)
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
+	searchPath := input.Path
+	if strings.TrimSpace(searchPath) == "" {
+		searchPath = "."
+	}
+
+	resolution, err := sandbox.EnforceRepoScope(repoRoot, sandbox.ScopeTarget{
+		ToolName:  call.Name,
+		Operation: "search",
+		Path:      searchPath,
+	})
+	if err != nil {
+		result.IsError = true
+		return result, err
+	}
+
 	args := []string{"rg", "--line-number", "--with-filename", "--color=never"}
 	if !input.CaseSensitive {
 		args = append(args, "--ignore-case")
@@ -44,13 +67,18 @@ func CodeSearch(ctx context.Context, call runtime.ToolCall) (runtime.ToolResult,
 	}
 
 	args = append(args, input.Pattern)
-	if input.Path != "" {
-		args = append(args, input.Path)
-	} else {
-		args = append(args, ".")
+	targetPath, err := filepath.Rel(resolution.RepoRoot, resolution.ResolvedPath)
+	if err != nil {
+		result.IsError = true
+		return result, fmt.Errorf("search failed: resolve scoped search path: %w", err)
 	}
+	if targetPath == "" {
+		targetPath = "."
+	}
+	args = append(args, targetPath)
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir = resolution.RepoRoot
 	output, err := cmd.Output()
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {

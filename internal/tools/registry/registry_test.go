@@ -38,7 +38,7 @@ func TestDefinitionsExposeAllPhaseOneTools(t *testing.T) {
 		},
 		BashHandlerName: {
 			handlerName: BashHandlerName,
-			properties:  []string{"command"},
+			properties:  []string{"command", "working_dir"},
 		},
 		CodeSearchHandlerName: {
 			handlerName: CodeSearchHandlerName,
