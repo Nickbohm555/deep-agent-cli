@@ -132,6 +132,67 @@ func TestBuildSnapshotDeterministic(t *testing.T) {
 	if !reflect.DeepEqual(snapshotEntriesComparable(snapshotA.Entries), snapshotEntriesComparable(snapshotB.Entries)) {
 		t.Fatalf("BuildSnapshot entries differ between identical fixtures:\nA=%#v\nB=%#v", snapshotEntriesComparable(snapshotA.Entries), snapshotEntriesComparable(snapshotB.Entries))
 	}
+	if snapshotA.RootHash == "" {
+		t.Fatal("snapshotA.RootHash is empty")
+	}
+	if snapshotB.RootHash == "" {
+		t.Fatal("snapshotB.RootHash is empty")
+	}
+	if snapshotA.RootHash != snapshotB.RootHash {
+		t.Fatalf("root hash mismatch for identical fixtures: %q vs %q", snapshotA.RootHash, snapshotB.RootHash)
+	}
+
+	repeatSnapshot, err := BuildSnapshot(repoRootA)
+	if err != nil {
+		t.Fatalf("BuildSnapshot(%q) repeat returned error: %v", repoRootA, err)
+	}
+	if snapshotA.RootHash != repeatSnapshot.RootHash {
+		t.Fatalf("repeat root hash mismatch: first=%q repeat=%q", snapshotA.RootHash, repeatSnapshot.RootHash)
+	}
+}
+
+func TestHashNodeTreeIgnoresEntryOrder(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	mustWriteFile(t, filepath.Join(repoRoot, "docs", "guide.txt"), "guide\n")
+	mustWriteFile(t, filepath.Join(repoRoot, "src", "main.go"), "package main\n")
+
+	sizeGuide := int64(len("guide\n"))
+	sizeMain := int64(len("package main\n"))
+	mtime := int64(10)
+
+	build := func(entries []Entry) string {
+		t.Helper()
+
+		root, err := BuildNodeTree(entries)
+		if err != nil {
+			t.Fatalf("BuildNodeTree returned error: %v", err)
+		}
+
+		hash, err := HashNodeTree(repoRoot, root)
+		if err != nil {
+			t.Fatalf("HashNodeTree returned error: %v", err)
+		}
+		return hash
+	}
+
+	hashA := build([]Entry{
+		{Path: "src", NodeType: indexsync.NodeTypeDir},
+		{Path: "docs/guide.txt", NodeType: indexsync.NodeTypeFile, SizeBytes: &sizeGuide, MTimeNS: &mtime},
+		{Path: "docs", NodeType: indexsync.NodeTypeDir},
+		{Path: "src/main.go", NodeType: indexsync.NodeTypeFile, SizeBytes: &sizeMain, MTimeNS: &mtime},
+	})
+	hashB := build([]Entry{
+		{Path: "src/main.go", NodeType: indexsync.NodeTypeFile, SizeBytes: &sizeMain, MTimeNS: &mtime},
+		{Path: "docs", NodeType: indexsync.NodeTypeDir},
+		{Path: "src", NodeType: indexsync.NodeTypeDir},
+		{Path: "docs/guide.txt", NodeType: indexsync.NodeTypeFile, SizeBytes: &sizeGuide, MTimeNS: &mtime},
+	})
+
+	if hashA != hashB {
+		t.Fatalf("HashNodeTree root hash depends on input order: %q vs %q", hashA, hashB)
+	}
 }
 
 func TestBuildNodeTreeSortsSiblingsLexicographically(t *testing.T) {
@@ -184,6 +245,17 @@ func orderedPathsFromRoot(root *Node) []string {
 	}
 	walk(root)
 	return paths
+}
+
+func mustWriteFile(t *testing.T, path, contents string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) returned error: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) returned error: %v", path, err)
+	}
 }
 
 func copyDiscoveryFixture(t *testing.T) string {

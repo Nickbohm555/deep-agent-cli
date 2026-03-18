@@ -13,11 +13,14 @@ import (
 )
 
 type Entry struct {
-	Path       string
-	ParentPath string
-	NodeType   indexsync.NodeType
-	SizeBytes  *int64
-	MTimeNS    *int64
+	Path        string
+	ParentPath  string
+	NodeType    indexsync.NodeType
+	NodeHash    string
+	ParentHash  string
+	ContentHash string
+	SizeBytes   *int64
+	MTimeNS     *int64
 }
 
 type Node struct {
@@ -29,6 +32,7 @@ type Snapshot struct {
 	RepoRoot string
 	Entries  []Entry
 	Root     *Node
+	RootHash string
 }
 
 func BuildSnapshot(repoRoot string) (*Snapshot, error) {
@@ -101,10 +105,31 @@ func BuildSnapshot(repoRoot string) (*Snapshot, error) {
 		return nil, err
 	}
 
+	rootHash, err := HashNodeTree(canonicalRoot, root)
+	if err != nil {
+		return nil, fmt.Errorf("build snapshot hashes: %w", err)
+	}
+
+	hashedEntries := make(map[string]Entry, len(entries))
+	var collect func(node *Node)
+	collect = func(node *Node) {
+		for _, child := range node.Children {
+			hashedEntries[child.Entry.Path] = child.Entry
+			collect(child)
+		}
+	}
+	collect(root)
+	for i, entry := range entries {
+		if hashed, ok := hashedEntries[entry.Path]; ok {
+			entries[i] = hashed
+		}
+	}
+
 	return &Snapshot{
 		RepoRoot: canonicalRoot,
 		Entries:  entries,
 		Root:     root,
+		RootHash: rootHash,
 	}, nil
 }
 
