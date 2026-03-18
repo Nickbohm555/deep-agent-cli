@@ -61,6 +61,7 @@ type Message struct {
 	Content    string
 	ToolCallID string
 	ToolName   string
+	ToolCalls  []ToolCall
 }
 
 type ToolCall struct {

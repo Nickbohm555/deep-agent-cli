@@ -31,60 +31,69 @@ func (o *Orchestrator) RunTurn(ctx context.Context, input TurnInput) (TurnOutput
 	}
 
 	conversation := appendConversation(input.Conversation, input.Config.SystemPrompt, input.UserMessage)
-	response, err := o.completeTurn(ctx, input, conversation)
+	if o.Provider == nil {
+		return fallbackTurnOutput(input, conversation), nil
+	}
+
+	tools, err := o.listTools(ctx)
 	if err != nil {
 		return TurnOutput{}, err
 	}
 
-	messages := append(conversation, response.AssistantMessage)
-	return TurnOutput{
-		SessionID:     input.SessionID,
-		RequestID:     input.RequestID,
-		AssistantText: response.AssistantMessage.Content,
-		Messages:      messages,
-		ToolCalls:     response.ToolCalls,
-		StopReason:    response.StopReason,
-		Usage:         response.Usage,
-	}, nil
-}
-
-func (o *Orchestrator) completeTurn(ctx context.Context, input TurnInput, conversation []Message) (ProviderResponse, error) {
-	if o.Provider == nil {
-		return ProviderResponse{
-			AssistantMessage: Message{
-				Role:    MessageRoleAssistant,
-				Content: fallbackAssistantMessage(input.UserMessage),
-			},
-			StopReason: StopReasonComplete,
-		}, nil
+	maxIterations := input.Config.MaxToolIterations
+	if maxIterations <= 0 {
+		maxIterations = 1
 	}
 
-	var tools []ToolDefinition
-	if o.Registry != nil {
-		listed, err := o.Registry.ListTools(ctx)
-		if err != nil {
-			return ProviderResponse{}, fmt.Errorf("list tools: %w", err)
+	output := TurnOutput{
+		SessionID: input.SessionID,
+		RequestID: input.RequestID,
+	}
+
+	for iteration := 0; ; iteration++ {
+		if err := ctx.Err(); err != nil {
+			output.Messages = conversation
+			output.StopReason = StopReasonCancelled
+			return output, err
 		}
-		tools = listed
-	}
 
-	response, err := o.Provider.CompleteTurn(ctx, ProviderRequest{
-		Input:        input,
-		Conversation: conversation,
-		Tools:        tools,
-	})
-	if err != nil {
-		return ProviderResponse{}, fmt.Errorf("complete turn: %w", err)
-	}
+		response, err := o.completeTurn(ctx, input, conversation, tools)
+		if err != nil {
+			return TurnOutput{}, err
+		}
 
-	if response.AssistantMessage.Role == "" {
-		response.AssistantMessage.Role = MessageRoleAssistant
-	}
-	if response.StopReason == "" {
-		response.StopReason = StopReasonComplete
-	}
+		conversation = append(conversation, response.AssistantMessage)
+		output.AssistantText = response.AssistantMessage.Content
+		output.Messages = conversation
+		output.ToolCalls = append(output.ToolCalls, response.ToolCalls...)
+		output.StopReason = response.StopReason
+		output.Usage = response.Usage
 
-	return response, nil
+		if len(response.ToolCalls) == 0 {
+			return output, nil
+		}
+		if iteration+1 >= maxIterations {
+			output.StopReason = StopReasonMaxTurns
+			return output, nil
+		}
+
+		results, err := o.dispatchToolCalls(ctx, response.ToolCalls)
+		if err != nil {
+			return TurnOutput{}, err
+		}
+
+		output.ToolResults = append(output.ToolResults, results...)
+		for _, result := range results {
+			toolMessage := Message{
+				Role:     MessageRoleTool,
+				Content:  toolResultContent(result),
+				ToolName: result.Name,
+			}
+			toolMessage.ToolCallID = result.CallID
+			conversation = append(conversation, toolMessage)
+		}
+		output.Messages = conversation
+	}
 }
 
 func appendConversation(existing []Message, systemPrompt, userMessage string) []Message {
@@ -122,4 +131,106 @@ func fallbackAssistantMessage(userMessage string) string {
 	}
 
 	return "Echo: " + trimmed
+}
+
+func (o *Orchestrator) completeTurn(ctx context.Context, input TurnInput, conversation []Message, tools []ToolDefinition) (ProviderResponse, error) {
+	response, err := o.Provider.CompleteTurn(ctx, ProviderRequest{
+		Input:        input,
+		Conversation: conversation,
+		Tools:        tools,
+	})
+	if err != nil {
+		return ProviderResponse{}, fmt.Errorf("complete turn: %w", err)
+	}
+
+	if response.AssistantMessage.Role == "" {
+		response.AssistantMessage.Role = MessageRoleAssistant
+	}
+	if response.AssistantMessage.ToolCalls == nil && len(response.ToolCalls) > 0 {
+		response.AssistantMessage.ToolCalls = append([]ToolCall(nil), response.ToolCalls...)
+	}
+	if response.StopReason == "" {
+		if len(response.ToolCalls) > 0 {
+			response.StopReason = StopReasonToolCalls
+		} else {
+			response.StopReason = StopReasonComplete
+		}
+	}
+
+	return response, nil
+}
+
+func (o *Orchestrator) listTools(ctx context.Context) ([]ToolDefinition, error) {
+	if o.Registry == nil {
+		return nil, nil
+	}
+
+	tools, err := o.Registry.ListTools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list tools: %w", err)
+	}
+
+	return tools, nil
+}
+
+func (o *Orchestrator) dispatchToolCalls(ctx context.Context, calls []ToolCall) ([]ToolResult, error) {
+	if o.Dispatcher == nil {
+		return nil, fmt.Errorf("dispatch tool calls: no tool dispatcher configured")
+	}
+
+	results := make([]ToolResult, 0, len(calls))
+	for _, call := range calls {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		result, err := o.Dispatcher.Dispatch(ctx, call)
+		if err != nil {
+			result = normalizeToolResult(result, call, err.Error(), true)
+		} else {
+			result = normalizeToolResult(result, call, result.Output, result.IsError)
+		}
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+func normalizeToolResult(result ToolResult, call ToolCall, fallbackOutput string, isError bool) ToolResult {
+	if result.CallID == "" {
+		result.CallID = call.ID
+	}
+	if result.Name == "" {
+		result.Name = call.Name
+	}
+	if result.Output == "" {
+		result.Output = fallbackOutput
+	}
+	result.IsError = isError
+	return result
+}
+
+func toolResultContent(result ToolResult) string {
+	if result.Output != "" {
+		return result.Output
+	}
+	if result.IsError {
+		return "tool execution failed"
+	}
+	return ""
+}
+
+func fallbackTurnOutput(input TurnInput, conversation []Message) TurnOutput {
+	assistant := Message{
+		Role:    MessageRoleAssistant,
+		Content: fallbackAssistantMessage(input.UserMessage),
+	}
+	messages := append(conversation, assistant)
+	return TurnOutput{
+		SessionID:     input.SessionID,
+		RequestID:     input.RequestID,
+		AssistantText: assistant.Content,
+		Messages:      messages,
+		StopReason:    StopReasonComplete,
+	}
 }
