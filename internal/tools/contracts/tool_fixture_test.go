@@ -10,7 +10,7 @@ import (
 func TestToolFixtureSanity(t *testing.T) {
 	t.Parallel()
 
-	fixtureRoot := filepath.Join("fixtures", "fixture_repo")
+	fixtureRoot := filepath.Join(contractsRootDir(t), "fixtures", "fixture_repo")
 
 	readmePath := filepath.Join(fixtureRoot, "README.md")
 	readmeContent, err := os.ReadFile(readmePath)

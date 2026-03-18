@@ -131,6 +131,16 @@ func shouldSkipToolDir(name, relPath string) bool {
 }
 
 func displayListPath(repoRoot, resolvedPath, requestedPath string) string {
+	if requestedPath != "." {
+		requestedRoot, err := session.ResolvePathWithinRepo(repoRoot, requestedPath)
+		if err == nil {
+			relPath, err := filepath.Rel(requestedRoot, resolvedPath)
+			if err == nil {
+				return filepath.ToSlash(relPath)
+			}
+		}
+	}
+
 	relPath, err := filepath.Rel(repoRoot, resolvedPath)
 	if err != nil {
 		return requestedPath
