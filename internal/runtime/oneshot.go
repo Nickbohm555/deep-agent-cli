@@ -12,6 +12,7 @@ type OneShotDriver struct {
 	Config    ExecutionConfig
 	Out       io.Writer
 	SessionID string
+	History   []Message
 }
 
 func (d OneShotDriver) Run(ctx context.Context, prompt string) (TurnOutput, error) {
@@ -25,9 +26,10 @@ func (d OneShotDriver) Run(ctx context.Context, prompt string) (TurnOutput, erro
 	}
 
 	result, err := d.Runner.RunTurn(ctx, TurnInput{
-		SessionID:   d.SessionID,
-		UserMessage: trimmed,
-		Config:      d.Config,
+		SessionID:    d.SessionID,
+		UserMessage:  trimmed,
+		Conversation: append([]Message(nil), d.History...),
+		Config:       d.Config,
 	})
 	if err != nil {
 		return TurnOutput{}, err

@@ -18,6 +18,7 @@ type InteractiveDriver struct {
 	In        io.Reader
 	Out       io.Writer
 	SessionID string
+	History   []Message
 }
 
 func (d InteractiveDriver) Run(ctx context.Context) error {
@@ -35,7 +36,7 @@ func (d InteractiveDriver) Run(ctx context.Context) error {
 	}
 
 	scanner := bufio.NewScanner(in)
-	conversation := []Message{}
+	conversation := append([]Message(nil), d.History...)
 
 	fmt.Fprintln(out, "Chat with deep-agent-cli")
 	for {

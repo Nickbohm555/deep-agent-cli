@@ -16,9 +16,10 @@ type SessionLifecycleParams struct {
 }
 
 type SessionBootstrap struct {
-	Session  session.Session
-	Messages []session.Message
-	Resumed  bool
+	Session      session.Session
+	Messages     []session.Message
+	Conversation []Message
+	Resumed      bool
 }
 
 func CreateOrResumeSession(ctx context.Context, store session.SessionStore, params SessionLifecycleParams) (SessionBootstrap, error) {
@@ -56,10 +57,30 @@ func CreateOrResumeSession(ctx context.Context, store session.SessionStore, para
 	}
 
 	return SessionBootstrap{
-		Session:  resumed,
-		Messages: messages,
-		Resumed:  true,
+		Session:      resumed,
+		Messages:     messages,
+		Conversation: rehydrateConversation(messages),
+		Resumed:      true,
 	}, nil
+}
+
+func rehydrateConversation(messages []session.Message) []Message {
+	conversation := make([]Message, 0, len(messages))
+	for _, persisted := range messages {
+		role := MessageRole(strings.TrimSpace(persisted.Role))
+		switch role {
+		case MessageRoleUser, MessageRoleAssistant, MessageRoleTool, MessageRoleSystem:
+		default:
+			role = MessageRoleAssistant
+		}
+
+		conversation = append(conversation, Message{
+			Role:    role,
+			Content: persisted.Content,
+		})
+	}
+
+	return conversation
 }
 
 func resolveRepoRoot(repoRoot string) (string, error) {

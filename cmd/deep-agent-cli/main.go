@@ -86,6 +86,7 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 			In:        stdin,
 			Out:       stdout,
 			SessionID: bootstrap.Session.ThreadID,
+			History:   bootstrap.Conversation,
 		}
 		return driver.Run(ctx)
 	}
@@ -96,6 +97,7 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout *os.File) er
 			Config:    cfg,
 			Out:       stdout,
 			SessionID: bootstrap.Session.ThreadID,
+			History:   bootstrap.Conversation,
 		}
 		_, err := driver.Run(ctx, *prompt)
 		return err

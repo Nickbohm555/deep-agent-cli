@@ -97,8 +97,59 @@ func TestCreateOrResumeSessionLoadsExistingThreadHistory(t *testing.T) {
 	if len(bootstrap.Messages) != 2 {
 		t.Fatalf("Messages length = %d, want 2", len(bootstrap.Messages))
 	}
+	if len(bootstrap.Conversation) != 2 {
+		t.Fatalf("Conversation length = %d, want 2", len(bootstrap.Conversation))
+	}
+	if bootstrap.Conversation[0].Role != MessageRoleUser || bootstrap.Conversation[0].Content != "hi" {
+		t.Fatalf("Conversation[0] = %+v, want user hi", bootstrap.Conversation[0])
+	}
+	if bootstrap.Conversation[1].Role != MessageRoleAssistant || bootstrap.Conversation[1].Content != "hello" {
+		t.Fatalf("Conversation[1] = %+v, want assistant hello", bootstrap.Conversation[1])
+	}
 	if store.createCalls != 0 {
 		t.Fatalf("CreateSession called %d times, want 0", store.createCalls)
+	}
+}
+
+func TestCreateOrResumeSessionRehydratesConversationInStoredOrder(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)
+	store := &stubSessionStore{
+		resumeSessionFn: func(_ context.Context, threadID string) (session.Session, error) {
+			return session.Session{
+				ThreadID:  threadID,
+				RepoRoot:  "/repo",
+				CreatedAt: now,
+			}, nil
+		},
+		listMessagesFn: func(_ context.Context, threadID string) ([]session.Message, error) {
+			return []session.Message{
+				{ID: 10, ThreadID: threadID, Role: "assistant", Content: "first assistant", CreatedAt: now.Add(3 * time.Second)},
+				{ID: 11, ThreadID: threadID, Role: "tool", Content: "tool output", CreatedAt: now.Add(time.Second)},
+				{ID: 12, ThreadID: threadID, Role: "user", Content: "final user", CreatedAt: now.Add(2 * time.Second)},
+			}, nil
+		},
+	}
+
+	bootstrap, err := CreateOrResumeSession(context.Background(), store, SessionLifecycleParams{
+		ThreadID: "thread-ordered",
+	})
+	if err != nil {
+		t.Fatalf("CreateOrResumeSession returned error: %v", err)
+	}
+
+	if len(bootstrap.Conversation) != 3 {
+		t.Fatalf("Conversation length = %d, want 3", len(bootstrap.Conversation))
+	}
+	if bootstrap.Conversation[0].Role != MessageRoleAssistant || bootstrap.Conversation[0].Content != "first assistant" {
+		t.Fatalf("Conversation[0] = %+v, want first stored assistant message", bootstrap.Conversation[0])
+	}
+	if bootstrap.Conversation[1].Role != MessageRoleTool || bootstrap.Conversation[1].Content != "tool output" {
+		t.Fatalf("Conversation[1] = %+v, want stored tool message", bootstrap.Conversation[1])
+	}
+	if bootstrap.Conversation[2].Role != MessageRoleUser || bootstrap.Conversation[2].Content != "final user" {
+		t.Fatalf("Conversation[2] = %+v, want final stored user message", bootstrap.Conversation[2])
 	}
 }
 
