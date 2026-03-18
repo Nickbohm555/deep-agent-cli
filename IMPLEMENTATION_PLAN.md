@@ -1,5 +1,5 @@
 Tasks are in **required implementation order** (1...n). Each section = one context window. Complete one section at a time.
-Current section to work on: section 63. (move +1 after each turn)
+Current section to work on: section 64. (move +1 after each turn)
 
 ## Section 1 — 01-runtime-foundation — 01-01-runtime-boundaries-and-registry — Task 1 (Execution)
 - Plan: `.planning/phases/01-runtime-foundation/01-01-runtime-boundaries-and-registry-PLAN.md`
@@ -341,4 +341,4 @@ Current section to work on: section 63. (move +1 after each turn)
 - Research: `.planning/phases/06-semantic-retrieval-vertical-slice/06-RESEARCH.md`
 - Steps: load research; execute Task 2 action; run Task 2 verify; ensure Task 2 done; write `.loop-commit-msg` as `06-05-task2`; update `.planning/STATE.md` with `phase=06-semantic-retrieval-vertical-slice`, `plan=06-05`, `task=2`, `status=implemented`.
 Tasks are in **required implementation order** (1...n). Each section = one context window. Complete one section at a time.
-Current section to work on: section 63. (move +1 after each turn)
+Current section to work on: section 64. (move +1 after each turn)
