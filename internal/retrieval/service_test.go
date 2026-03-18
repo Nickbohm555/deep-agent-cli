@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -153,4 +154,57 @@ func TestSemanticRetrievalContracts(t *testing.T) {
 			t.Fatalf("Query() error = %v, want semantic retriever is not configured", err)
 		}
 	})
+}
+
+func TestScoreFromCosineDistance(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		distance float64
+		want     float64
+	}{
+		{name: "perfect match", distance: 0, want: 1},
+		{name: "partial match", distance: 0.25, want: 0.75},
+		{name: "orthogonal", distance: 1, want: 0},
+		{name: "opposite direction", distance: 2, want: -1},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := ScoreFromCosineDistance(tc.distance); got != tc.want {
+				t.Fatalf("ScoreFromCosineDistance(%v) = %v, want %v", tc.distance, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyStableRanks(t *testing.T) {
+	t.Parallel()
+
+	input := []SemanticQueryResult{
+		{Rank: 99, FilePath: "zeta.go", ChunkID: "zeta.go#1", Score: 0.5},
+		{Rank: 88, FilePath: "alpha.go", ChunkID: "alpha.go#2", Score: 0.9},
+		{Rank: 77, FilePath: "alpha.go", ChunkID: "alpha.go#1", Score: 0.9},
+		{Rank: 66, FilePath: "beta.go", ChunkID: "beta.go#1", Score: 0.9},
+	}
+
+	got := ApplyStableRanks(input)
+
+	want := []SemanticQueryResult{
+		{Rank: 1, FilePath: "alpha.go", ChunkID: "alpha.go#1", Score: 0.9},
+		{Rank: 2, FilePath: "alpha.go", ChunkID: "alpha.go#2", Score: 0.9},
+		{Rank: 3, FilePath: "beta.go", ChunkID: "beta.go#1", Score: 0.9},
+		{Rank: 4, FilePath: "zeta.go", ChunkID: "zeta.go#1", Score: 0.5},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ApplyStableRanks() = %#v, want %#v", got, want)
+	}
+
+	if input[0].Rank != 99 || input[1].Rank != 88 || input[2].Rank != 77 || input[3].Rank != 66 {
+		t.Fatalf("ApplyStableRanks() mutated input ranks: %#v", input)
+	}
 }
